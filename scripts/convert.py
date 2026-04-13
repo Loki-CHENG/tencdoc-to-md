@@ -62,10 +62,21 @@ CLEANERS = [
 # --------------------------------------------------------------------------- #
 
 def _load_config() -> dict:
-    """读取项目根目录的 config.yaml，找不到或格式错误时静默返回空字典。"""
+    """读取项目根目录的 config.yaml。
+
+    - pyyaml 未安装：打印警告并提示安装命令，返回空字典
+    - config.yaml 不存在：静默返回空字典（用户可能不用配置文件）
+    - config.yaml 解析失败：打印错误，返回空字典
+    """
     try:
         import yaml  # pyyaml
     except ImportError:
+        print(
+            "⚠️  警告：未找到 pyyaml 模块，config.yaml 配置文件将被忽略。\n"
+            "   输出路径将使用默认值（docx 文件所在目录）。\n"
+            "   安装命令：python3 -m pip install pyyaml --user --break-system-packages\n",
+            file=sys.stderr,
+        )
         return {}
 
     for candidate in [_ROOT / "config.yaml", _HERE / "config.yaml"]:
@@ -73,9 +84,14 @@ def _load_config() -> dict:
             try:
                 with open(candidate, encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
+                print(f"📋 已读取配置：{candidate}", file=sys.stderr)
                 return data
-            except Exception:
-                pass
+            except Exception as e:
+                print(
+                    f"⚠️  警告：config.yaml 解析失败（{e}），将使用默认配置。",
+                    file=sys.stderr,
+                )
+                return {}
     return {}
 
 
@@ -235,32 +251,86 @@ def _build_report(ctx: CleanerContext) -> dict:
 # CLI 入口
 # --------------------------------------------------------------------------- #
 
+def _print_summary(report: dict, attachments_dir: Path | None, dry_run: bool) -> None:
+    """将转换结果以人类可读格式输出到 stdout。"""
+    r = report["tencdoc_report"]
+    md_path = r["output_md"]
+    att_dir = r["attachments_dir"]
+    img_count = r["image_count"]
+    warns = r["warnings"]
+    stages = r.get("stages", {})
+
+    if dry_run:
+        print("🔍 [dry-run] 预览完成，未写入文件")
+        return
+
+    print(f"✅ 转换成功")
+    print(f"   📄 Markdown  : {md_path}")
+    print(f"   🖼️  附件目录  : {att_dir}  （{img_count} 张图片）")
+
+    # 关键统计
+    tc = stages.get("table_cleaner", {})
+    inf = stages.get("inline_formatter", {})
+    pipe_t = tc.get("degraded_to_pipe", 0)
+    html_t = tc.get("kept_as_html", 0)
+    ul = inf.get("underlines_restored", 0)
+    hl = inf.get("highlights_restored", 0)
+    cl = inf.get("colours_restored", 0)
+    details = []
+    if pipe_t:  details.append(f"{pipe_t} 个 pipe 表")
+    if html_t:  details.append(f"{html_t} 个 HTML 表")
+    if ul:      details.append(f"{ul} 处下划线")
+    if hl:      details.append(f"{hl} 处高亮")
+    if cl:      details.append(f"{cl} 处文字颜色")
+    if details:
+        print(f"   📊 还原内容  : {' · '.join(details)}")
+
+    # 警告
+    if warns:
+        print(f"   ⚠️  警告（{len(warns)} 条）：")
+        for w in warns:
+            print(f"      - {w}")
+
+    # 全局附件库模式：提醒用户配置 Obsidian
+    if attachments_dir:
+        # 尝试推断相对于 vault 的路径供用户参考
+        print()
+        print("   💡 提醒：你使用了「全局附件库模式」")
+        print(f"      附件存放在：{att_dir}")
+        print(f"      请在 Obsidian 中完成以下设置（否则图片无法显示）：")
+        print(f"      设置 → 文件与链接 → 附件文件夹路径")
+        print(f"      → 填写附件目录相对于 Vault 根目录的路径")
+        print(f"      例如：99-附件/tencdoc-attachments")
+
+
 def main() -> int:
     cfg = _load_config()
 
     ap = argparse.ArgumentParser(
-        description="将腾讯文档 (WeCom) 的 .docx 转换为 Obsidian Markdown",
+        description="将腾讯文档 (WeCom) 的 .docx 转换为 Obsidian Markdown\n\n"
+                    "路径优先级：命令行参数 > config.yaml > 默认值（docx 所在目录）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("docx_path", help="输入的 .docx 文件路径")
     ap.add_argument(
         "--output-dir", "-o",
         default=None,
-        help="Markdown 文件输出目录（默认：config.yaml 中的 output_dir，或 docx 所在目录）",
+        help="Markdown 文件输出目录（默认：config.yaml 的 output_dir，或 docx 所在目录）",
     )
     ap.add_argument(
         "--attachments-dir",
         default=None,
-        help="全局附件根目录（默认：config.yaml 中的 attachments_dir，或 output_dir/<stem>/）",
+        help="全局附件根目录（默认：config.yaml 的 attachments_dir，或与 md 同级子目录）",
     )
     ap.add_argument("--dry-run", action="store_true", help="预览模式，不写入文件")
     ap.add_argument("--keep-pandoc-media", action="store_true", help="保留 pandoc 原始 media 目录（调试用）")
     ap.add_argument("--force", action="store_true", help="覆盖已存在的输出文件")
+    ap.add_argument("--verbose", action="store_true", help="输出完整 JSON 转换报告到 stderr")
     args = ap.parse_args()
 
     docx = Path(args.docx_path).expanduser().resolve()
     if not docx.exists() or docx.suffix.lower() != ".docx":
-        print(f"ERROR: 不是有效的 .docx 文件：{docx}", file=sys.stderr)
+        print(f"❌ 不是有效的 .docx 文件：{docx}", file=sys.stderr)
         return 1
 
     # 路径优先级：CLI 参数 > config.yaml > 默认值
@@ -284,16 +354,14 @@ def main() -> int:
             keep_pandoc_media=args.keep_pandoc_media,
         )
     except FileExistsError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        print(f"❌ {e}", file=sys.stderr)
         return 1
 
-    md_path = report["tencdoc_report"]["output_md"]
-    if args.dry_run:
-        print("[dry-run] 预览完成，未写入文件")
-    else:
-        print(f"已生成：{md_path}")
+    _print_summary(report, attachments_dir, args.dry_run)
 
-    print(json.dumps(report, ensure_ascii=False, indent=2), file=sys.stderr)
+    if args.verbose:
+        print(json.dumps(report, ensure_ascii=False, indent=2), file=sys.stderr)
+
     return 0
 
 

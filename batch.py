@@ -26,7 +26,7 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_ROOT / "scripts"))
 
-from convert import convert_one, _load_config, _resolve_path  # noqa: E402
+from convert import convert_one, _load_config, _resolve_path, _print_summary  # noqa: E402
 
 
 def _check_pandoc() -> bool:
@@ -58,6 +58,7 @@ def main() -> int:
     )
     ap.add_argument("--force", action="store_true", help="覆盖已存在的输出")
     ap.add_argument("--dry-run", action="store_true", help="预览模式，不写入文件")
+    ap.add_argument("--verbose", action="store_true", help="每个文件转换后输出完整 JSON 报告")
     args = ap.parse_args()
 
     # ── 前置检查 ───────────────────────────────────────────────────────────────
@@ -143,6 +144,11 @@ def main() -> int:
         except Exception as e:
             results.append((docx.name, "❌", str(e), e))
             print(f"\r  ❌ {docx.name[:40]:<42} 失败：{e}")
+            continue
+
+        if args.verbose and results and results[-1][1] == "✅":
+            import json
+            print(json.dumps(report, ensure_ascii=False, indent=2))
 
     # ── 汇总 ───────────────────────────────────────────────────────────────────
     ok = sum(1 for *_, s, __ in results if s in ("✅", "⚠️ "))

@@ -2,46 +2,67 @@
 
 将**腾讯文档 / 企业微信（WeCom）**导出的 `.docx` 文件，转换为 **Obsidian 兼容的 Markdown**。
 
-支持：图片提取 & wiki-link 引用 · 表格智能清洗 · 下划线/高亮/文字颜色还原 · YAML front matter 注入 · 批量转换
+> 适用于腾讯文档 / 企业微信导出的 docx。通用 Word 文档请用 [docx-to-md](https://github.com/)。
+
+---
+
+## 5 分钟快速上手
+
+```bash
+# 1. 安装到 skills 目录
+mkdir -p ~/.config/agents/skills
+git clone https://github.com/Loki-CHENG/tencdoc-to-md.git ~/.config/agents/skills/tencdoc-to-md
+cd ~/.config/agents/skills/tencdoc-to-md
+
+# 2. 安装依赖
+brew install pandoc
+python3 -m pip install pyyaml --user --break-system-packages
+
+# 3. 配置路径
+cp config.example.yaml config.yaml
+# 用编辑器打开 config.yaml，填写 docx_dir / output_dir / attachments_dir
+
+# 4. 转换
+python3 batch.py
+```
 
 ---
 
 ## 目录
 
-- [效果预览](#效果预览)
+- [核心能力](#核心能力)
 - [前置依赖](#前置依赖)
 - [安装方式](#安装方式)
 - [首次配置](#首次配置)
 - [日常使用](#日常使用)
+- [Obsidian 附件设置](#obsidian-附件设置)
 - [更新方式](#更新方式)
 - [部署验证 Checklist](#部署验证-checklist)
 - [常见问题](#常见问题)
 
 ---
 
-## 效果预览
-
-```
-输入：腾讯文档导出的 某PRD.docx
-输出：
-  ~/ObsidianVault/TencDocs/
-  ├── 某PRD.md              ← 带 YAML front matter 的 Markdown
-  └── 某PRD/               ← 图片附件目录
-      ├── image1.png
-      └── image2.jpg
-```
-
-转换能力一览：
+## 核心能力
 
 | 能力 | 说明 |
 |------|------|
 | 图片提取 | 自动提取内嵌图片，生成 `![[wiki-link]]` 引用 |
-| 表格清洗 | 简单表格降级为 GFM pipe table；复杂表格保留 HTML，智能分配列宽 |
+| 表格清洗 | 简单表格 → GFM pipe table；复杂表格保留 HTML，智能分配列宽 |
 | 下划线还原 | `<u>文字</u>` |
 | 高亮还原 | `<span style="background-color: ...">` |
 | 文字颜色还原 | `<span style="color: ...">` |
 | front matter | 自动注入 title / source / converted_at / author 等字段 |
 | 批量转换 | 一条命令处理整个文件夹 |
+
+与通用 docx-to-md 的区别：
+
+| 特性 | tencdoc-to-md | 通用 docx-to-md |
+|------|---------------|-----------------|
+| 适用来源 | 腾讯文档 / WeCom | 通用 Word 文档 |
+| 图片引用 | `![[wiki-link]]` | 标准 Markdown |
+| 下划线 / 高亮 | 自动恢复 | 可能丢失 |
+| 标题层级 | 智能归一化 | 保持原样 |
+| 表格处理 | 智能降级 + 列宽分配 | 保持 HTML |
 
 ---
 
@@ -50,18 +71,10 @@
 ### 1. Python 3.8+
 
 ```bash
-python3 --version   # 确认已安装
+python3 --version   # 确认版本
 ```
-
-如未安装，从 https://www.python.org/downloads/ 下载。
 
 ### 2. pandoc 2.9+
-
-```bash
-pandoc --version   # 确认已安装
-```
-
-安装方式：
 
 ```bash
 # macOS
@@ -71,106 +84,126 @@ brew install pandoc
 sudo apt install pandoc
 
 # Windows
-# 下载安装包：https://pandoc.org/installing.html
+# 下载：https://pandoc.org/installing.html
 ```
 
-### 3. Python 依赖包
+### 3. Python 包
 
 ```bash
+# macOS（系统 Python 需要加 --user --break-system-packages）
+python3 -m pip install pyyaml --user --break-system-packages
+python3 -m pip install python-docx --user --break-system-packages
+
+# Windows / 虚拟环境
 pip install pyyaml python-docx
 ```
+
+> ⚠️ **macOS 注意**：直接运行 `pip install pyyaml` 可能报 `externally-managed-environment` 错误，必须加 `--user --break-system-packages`。这是正常现象，不会破坏系统。
 
 ---
 
 ## 安装方式
 
-### 方式 A — Claude Code 用户
+### 方式 A — AI Agent 用户（Claude Code / KimiCode Trae）
 
-将本仓库克隆到项目的 `.claude/skills/` 目录：
+安装到统一的 skills 目录，AI 工具会自动识别 `SKILL.md`：
 
 ```bash
-# 进入你的项目根目录
+mkdir -p ~/.config/agents/skills
+git clone https://github.com/Loki-CHENG/tencdoc-to-md.git ~/.config/agents/skills/tencdoc-to-md
+```
+
+**Claude Code** 额外步骤：
+
+```bash
+# 在你的项目目录下创建 skill 软链接
 cd /your/project
-
-# 创建 skills 目录（如不存在）
 mkdir -p .claude/skills
-
-# 克隆
-git clone git@github.com:Loki-CHENG/tencdoc-to-md.git .claude/skills/tencdoc-to-md
+ln -s ~/.config/agents/skills/tencdoc-to-md .claude/skills/tencdoc-to-md
 ```
 
-克隆后，Claude Code 会自动识别 `SKILL.md`，可以直接在对话中调用转换功能。
-
-### 方式 B — KimiCode（Trae）用户
-
-将本仓库克隆到 Trae 工作区下的 `.kimi/skills/` 目录：
+**KimiCode（Trae）** 额外步骤：
 
 ```bash
-# 进入你的 Trae 工作区根目录
+# 在 Trae 工作区创建 skill 软链接
 cd /your/trae-workspace
-
-# 创建 skills 目录（如不存在）
 mkdir -p .kimi/skills
-
-# 克隆
-git clone git@github.com:Loki-CHENG/tencdoc-to-md.git .kimi/skills/tencdoc-to-md
+ln -s ~/.config/agents/skills/tencdoc-to-md .kimi/skills/tencdoc-to-md
 ```
 
-> **注意：** 如果 Trae/KimiCode 的 skill 目录路径不同，请根据实际路径调整。
-
-### 方式 C — 命令行直接使用（不依赖 AI 工具）
-
-将本仓库克隆到任意目录，直接运行脚本即可：
+### 方式 B — 命令行直接使用
 
 ```bash
-# 克隆到本地
-git clone git@github.com:Loki-CHENG/tencdoc-to-md.git
-cd tencdoc-to-md
+git clone https://github.com/Loki-CHENG/tencdoc-to-md.git ~/tools/tencdoc-to-md
+cd ~/tools/tencdoc-to-md
+```
 
-# 配置（见下方"首次配置"）
-cp config.example.yaml config.yaml
-# 编辑 config.yaml，填写你的路径
+### 可选：创建快捷别名
 
-# 运行
-python batch.py
+在 `~/.zshrc` 或 `~/.bashrc` 中添加，之后可以直接用 `tencdoc` 命令：
+
+```bash
+alias tencdoc='python3 ~/.config/agents/skills/tencdoc-to-md/convert.py'
+```
+
+生效：
+
+```bash
+source ~/.zshrc   # 或 source ~/.bashrc
+tencdoc --help
 ```
 
 ---
 
 ## 首次配置
 
-克隆完成后，**必须**执行一次配置，否则无法使用批量转换功能。
-
-**第一步：复制配置模板**
+### 第一步：验证依赖
 
 ```bash
-cp config.example.yaml config.yaml
+python3 ~/.config/agents/skills/tencdoc-to-md/scripts/check_deps.py
 ```
 
-**第二步：用编辑器打开 `config.yaml`，修改以下三个路径**
+看到 `✅ 所有必需依赖已满足` 才能继续。
+
+### 第二步：创建配置文件
+
+```bash
+cp ~/.config/agents/skills/tencdoc-to-md/config.example.yaml \
+   ~/.config/agents/skills/tencdoc-to-md/config.yaml
+```
+
+### 第三步：填写三个路径
+
+用编辑器打开 `config.yaml`：
 
 ```yaml
-# 腾讯文档 docx 存放目录（批量转换时扫描此目录）
-docx_dir: ~/Downloads/腾讯文档导出
+# 1. 腾讯文档 docx 存放目录（批量转换时自动扫描）
+docx_dir: /path/to/your/vault/04-原始资料/待转换
 
-# 转换后 md 文件的输出目录（填写你的 Obsidian vault 子目录）
-output_dir: ~/ObsidianVault/TencDocs
+# 2. 转换后 md 文件的输出目录
+output_dir: /path/to/your/vault/04-原始资料/待整理
 
-# 附件目录（图片存放位置）
-# 留空 = 与 md 同级的子目录（推荐新用户使用）
-# 填路径 = 全局附件库（适合 Obsidian 统一附件管理）
-attachments_dir: ""
+# 3. 附件目录（留空 = 与 md 同级子目录；填路径 = 全局附件库）
+attachments_dir: /path/to/your/vault/99-附件/tencdoc-attachments
 ```
 
-> `config.yaml` 已在 `.gitignore` 中，不会被 git 追踪，每次 `git pull` 更新代码时不会覆盖你的配置。
+**推荐的 Obsidian Vault 目录结构：**
 
-**第三步：验证依赖**
-
-```bash
-python scripts/check_deps.py
+```
+YourVault/
+├── 04-原始资料/
+│   ├── 待转换/               ← docx_dir：放入 .docx 文件
+│   └── 待整理/               ← output_dir：转换后的 .md 输出这里
+└── 99-附件/
+    └── tencdoc-attachments/  ← attachments_dir：所有图片统一存放
+        ├── 文档A/
+        │   ├── image1.png
+        │   └── image2.jpg
+        └── 文档B/
+            └── image1.png
 ```
 
-看到 `All critical dependencies satisfied.` 说明环境正常。
+> `config.yaml` 已在 `.gitignore` 中，每次 `git pull` 更新代码时不会覆盖你的配置。
 
 ---
 
@@ -179,76 +212,83 @@ python scripts/check_deps.py
 ### 批量转换（推荐）
 
 ```bash
-# 进入项目目录
-cd tencdoc-to-md
+python3 ~/.config/agents/skills/tencdoc-to-md/batch.py
 
-# 转换 docx_dir 下所有 .docx 文件
-python batch.py
-
-# 覆盖已存在的输出文件
-python batch.py --force
+# 覆盖已存在的输出
+python3 batch.py --force
 
 # 只转换某一个文件
-python batch.py --file 某PRD.docx
+python3 batch.py --file 某PRD.docx
 
-# 预览模式（不写文件，仅查看会生成什么）
-python batch.py --dry-run
+# 预览模式（不写文件）
+python3 batch.py --dry-run
+
+# 输出完整 JSON 报告（调试用）
+python3 batch.py --verbose
 ```
 
 ### 单文件转换
 
 ```bash
-# 最简用法（输出目录从 config.yaml 读取）
-python convert.py ~/Downloads/某PRD.docx
+# 使用 config.yaml 中配置的输出目录
+python3 convert.py ~/Downloads/某PRD.docx
 
-# 指定输出目录
-python convert.py ~/Downloads/某PRD.docx --output-dir ~/ObsidianVault/TencDocs
+# 指定输出目录（覆盖 config.yaml）
+python3 convert.py ~/Downloads/某PRD.docx --output-dir ~/ObsidianVault/TencDocs
 
 # 覆盖已有文件
-python convert.py ~/Downloads/某PRD.docx --force
+python3 convert.py ~/Downloads/某PRD.docx --force
 
-# 查看所有选项
-python convert.py --help
+# 已设置 alias 的用户
+tencdoc ~/Downloads/某PRD.docx
 ```
 
-### 关于附件目录的两种模式
+### 读懂转换输出
 
-**模式 A（默认，留空）— 同级子目录**
-
-```
-TencDocs/
-├── 某PRD.md
-└── 某PRD/
-    ├── image1.png
-    └── image2.jpg
-```
-
-**模式 B（填写路径）— 全局附件库**
-
-```yaml
-# config.yaml
-attachments_dir: ~/ObsidianVault/attachments
-```
+成功时会看到：
 
 ```
-TencDocs/
-└── 某PRD.md
+📋 已读取配置：/path/to/config.yaml
+✅ 转换成功
+   📄 Markdown  : /vault/TencDocs/某PRD.md
+   🖼️  附件目录  : /vault/attachments/某PRD  （7 张图片）
+   📊 还原内容  : 1 个 pipe 表 · 2 个 HTML 表 · 15 处下划线 · 5 处高亮
 
-attachments/
-└── 某PRD/
-    ├── image1.png
-    └── image2.jpg
+   💡 提醒：你使用了「全局附件库模式」
+      请在 Obsidian 中完成附件文件夹设置（见下方说明）
 ```
 
-使用模式 B 时，需要同步在 Obsidian 中设置：
-`设置 → 文件与链接 → 附件文件夹路径` → 填写 `attachments`（相对 vault 根目录）
+关注以下信号：
+- `📋 已读取配置`：说明 config.yaml 生效了（没有这行 = pyyaml 未安装）
+- `⚠️ 警告`：需要人工处理的内容
+- `💡 提醒`：使用全局附件库时需要配置 Obsidian
+
+---
+
+## Obsidian 附件设置
+
+**只有使用全局附件库模式（`attachments_dir` 填了路径）才需要执行此步骤。**
+
+在 Obsidian 中：
+
+1. 打开 **设置** → **文件与链接**
+2. 找到 **附件文件夹路径**
+3. 填写 `attachments_dir` 相对于 Vault 根目录的路径
+
+示例（按上面推荐的目录结构）：
+
+```
+99-附件/tencdoc-attachments
+```
+
+配置完成后，Obsidian 就能正确显示转换后文档中的图片。
 
 ---
 
 ## 更新方式
 
 ```bash
-cd tencdoc-to-md
+cd ~/.config/agents/skills/tencdoc-to-md
 git pull
 ```
 
@@ -258,32 +298,38 @@ git pull
 
 ## 部署验证 Checklist
 
-第一次部署完成后，按以下步骤验证：
+第一次部署完成后，按以下步骤逐一验证：
 
 ```
-□ 1. git clone 成功，目录结构完整
-      ls -la  （应看到 convert.py batch.py config.example.yaml 等文件）
+□ 1. clone 成功，进入目录
+      cd ~/.config/agents/skills/tencdoc-to-md
+      ls -la
+      # 应看到：convert.py batch.py config.example.yaml SKILL.md 等文件
 
-□ 2. 复制配置模板
+□ 2. 验证依赖
+      python3 scripts/check_deps.py
+      # 所有项目显示 [OK] 才继续
+
+□ 3. 安装 Python 依赖（如 check_deps 提示缺少）
+      python3 -m pip install pyyaml --user --break-system-packages
+      python3 -m pip install python-docx --user --break-system-packages
+
+□ 4. 复制并编辑配置文件
       cp config.example.yaml config.yaml
+      # 填写 docx_dir / output_dir / attachments_dir 三个路径
 
-□ 3. 编辑 config.yaml，填写三个路径（docx_dir / output_dir / attachments_dir）
+□ 5. 放一个腾讯文档导出的 .docx 到 docx_dir 目录
 
-□ 4. 验证依赖
-      python scripts/check_deps.py
-      （看到 "All critical dependencies satisfied." 即可）
+□ 6. 运行批量转换
+      python3 batch.py
+      # 看到「📋 已读取配置」说明 config.yaml 生效
+      # 看到「✅ 转换成功」说明转换正常
 
-□ 5. 安装 Python 依赖
-      pip install pyyaml python-docx
+□ 7. 配置 Obsidian 附件目录（如使用全局附件库模式）
+      Obsidian → 设置 → 文件与链接 → 附件文件夹路径
 
-□ 6. 放一个腾讯文档导出的 .docx 到 docx_dir 目录
-
-□ 7. 运行批量转换
-      python batch.py
-      （看到 ✅ 行即成功）
-
-□ 8. 打开 Obsidian，确认
-      - .md 文件已出现在 output_dir 对应的 vault 目录
+□ 8. 打开 Obsidian，验证
+      - .md 文件出现在 output_dir 对应的 Vault 目录
       - 文档内图片正常显示（不是红色叹号）
       - front matter（文件顶部的 --- 块）格式正确
 ```
@@ -292,25 +338,43 @@ git pull
 
 ## 常见问题
 
-**Q：运行时提示 `ERROR: pandoc 未找到`**
+**Q：转换后输出文件跑到 docx 所在目录，而不是 output_dir**
 
-A：需要先安装 pandoc，参见[前置依赖](#前置依赖)。
+A：`pyyaml` 未安装，`config.yaml` 未被读取。运行：
 
-**Q：提示 `输出已存在`**
+```bash
+python3 -m pip install pyyaml --user --break-system-packages
+```
 
-A：加 `--force` 参数覆盖：`python batch.py --force`
+然后重新转换。如果仍有问题，检查 `check_deps.py` 的输出。
 
-**Q：图片在 Obsidian 中显示红色叹号（无法加载）**
+**Q：pip install 报 `externally-managed-environment` 错误**
 
-A：检查 Obsidian 的附件文件夹设置。如果使用模式 B（全局附件库），需要在 Obsidian 设置中将附件路径指向 `attachments_dir` 对应目录。
+A：macOS 系统 Python 的限制，加上 `--user --break-system-packages` 参数即可：
 
-**Q：表格显示异常**
+```bash
+python3 -m pip install pyyaml --user --break-system-packages
+```
 
-A：腾讯文档的复杂表格（合并单元格、嵌套列表）会保留为 HTML 格式，需要 Obsidian 开启"渲染 HTML"功能（默认开启）。
+**Q：图片在 Obsidian 中显示红色叹号**
 
-**Q：转换后标题层级不对**
+A：使用全局附件库模式时，需要在 Obsidian 设置中配置「附件文件夹路径」，见[上方说明](#obsidian-附件设置)。
 
-A：腾讯文档导出的 docx 标题样式不规范，工具会自动修复常见问题。如仍有问题，可手动调整 md 文件中的 `#` 层级。
+**Q：提示「输出已存在」**
+
+A：加 `--force` 参数：`python3 batch.py --force`
+
+**Q：转换结果的标题层级不正确**
+
+A：腾讯文档导出的 docx 标题样式不规范，工具会自动修复常见情况。如仍有偏差，手动调整 md 文件的 `#` 层级即可。
+
+**Q：某些表格显示异常**
+
+A：复杂表格（合并单元格、嵌套列表）会保留为 HTML，Obsidian 默认渲染 HTML。若显示异常，检查 Obsidian 是否开启了 HTML 渲染。
+
+**Q：想查看完整的转换统计**
+
+A：加 `--verbose` 参数输出完整 JSON 报告：`python3 batch.py --verbose`
 
 ---
 
@@ -318,28 +382,24 @@ A：腾讯文档导出的 docx 标题样式不规范，工具会自动修复常�
 
 ```
 tencdoc-to-md/
-├── convert.py              ← 单文件转换入口（根目录快捷方式）
+├── convert.py              ← 单文件转换入口
 ├── batch.py                ← 批量转换入口
-├── config.example.yaml     ← 配置模板（复制为 config.yaml 后填写路径）
+├── config.example.yaml     ← 配置模板（复制为 config.yaml 填写路径）
 ├── config.yaml             ← 你的本地配置（不进 git）
 ├── requirements.txt        ← Python 依赖声明
 ├── LICENSE                 ← MIT 协议
 ├── SKILL.md                ← AI agent 调用规范（Claude Code / KimiCode）
 ├── scripts/
 │   ├── convert.py          ← 核心转换逻辑
-│   ├── check_deps.py       ← 依赖检查
+│   ├── check_deps.py       ← 依赖检查（首次安装必跑）
 │   └── tencdoc/            ← 转换流水线各模块
-│       ├── probe.py
-│       ├── preprocess.py
-│       ├── pipeline.py
-│       └── cleaners/
 ├── references/
 │   ├── CHANGELOG.md        ← 版本历史
 │   ├── pipeline-internals.md
 │   └── backlog.md
 └── tests/
-    ├── run_tests.py        ← 回归测试脚本
-    └── UAT_report/         ← 走查报告
+    ├── run_tests.py
+    └── UAT_report/
 ```
 
 ---

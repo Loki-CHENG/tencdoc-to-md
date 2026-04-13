@@ -4,6 +4,7 @@
 Validates:
 - Python >= 3.8
 - pandoc >= 2.9 on PATH
+- pyyaml (required for config.yaml reading)
 - python-docx (optional, used by probe for fallback)
 
 Exit 0 = all good. Exit 1 = missing critical dep with install instructions.
@@ -42,42 +43,62 @@ def _parse_ver(ver: str) -> Tuple[int, ...]:
 
 def main() -> int:
     ok = True
-    print(f"Python: {sys.version}")
+
+    # ── Python ──────────────────────────────────────────────────────────────
+    print(f"Python: {sys.version.split()[0]}")
     if not _python_version_ok():
-        print("  [FAIL] Python >= 3.8 required.")
+        print("  [FAIL] 需要 Python >= 3.8")
         ok = False
     else:
         print("  [OK]")
 
+    # ── pandoc ──────────────────────────────────────────────────────────────
     ver = _pandoc_version()
     if ver is None:
-        print("pandoc: NOT FOUND")
-        print("  [FAIL] pandoc is required. Install:")
+        print("pandoc: 未安装")
+        print("  [FAIL] pandoc 是必需依赖，请安装：")
         print("    macOS  : brew install pandoc")
         print("    Ubuntu : sudo apt install pandoc")
-        print("    Windows: choco install pandoc  OR  https://pandoc.org/installing.html")
+        print("    Windows: https://pandoc.org/installing.html")
         ok = False
     else:
         print(f"pandoc: {ver}")
         if _parse_ver(ver) < (2, 9):
-            print(f"  [WARN] pandoc >= 2.9 recommended (you have {ver}).")
+            print(f"  [WARN] 建议 pandoc >= 2.9（当前 {ver}），可能影响转换质量")
         else:
             print("  [OK]")
 
-    # Optional: python-docx
+    # ── pyyaml（必需，用于读取 config.yaml）────────────────────────────────
     try:
-        import docx  # noqa: F401
-        print("python-docx: installed")
+        import yaml
+        ver_yaml = getattr(yaml, "__version__", "unknown")
+        print(f"pyyaml: {ver_yaml}")
         print("  [OK]")
     except ImportError:
-        print("python-docx: not installed (optional)")
-        print("  [INFO] pip install python-docx  — needed only for advanced probe fallback.")
+        print("pyyaml: 未安装")
+        print("  [FAIL] pyyaml 是必需依赖（读取 config.yaml 配置文件）")
+        print("    安装命令：")
+        print("    macOS/Linux : python3 -m pip install pyyaml --user --break-system-packages")
+        print("    Windows     : pip install pyyaml")
+        ok = False
 
+    # ── python-docx（可选）─────────────────────────────────────────────────
+    try:
+        import docx  # noqa: F401
+        print("python-docx: 已安装")
+        print("  [OK]")
+    except ImportError:
+        print("python-docx: 未安装（可选）")
+        print("  [INFO] 可选依赖，缺少时 probe 会自动降级")
+        print("    安装命令：python3 -m pip install python-docx --user --break-system-packages")
+
+    # ── 结论 ────────────────────────────────────────────────────────────────
+    print()
     if ok:
-        print("\nAll critical dependencies satisfied.")
+        print("✅  所有必需依赖已满足，可以开始使用。")
         return 0
     else:
-        print("\nSome critical dependencies are missing. Please install them before running convert.py.")
+        print("❌  存在缺失的必需依赖，请按上面的提示安装后重试。")
         return 1
 
 
