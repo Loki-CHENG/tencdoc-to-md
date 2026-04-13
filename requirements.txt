@@ -1,0 +1,14 @@
+# tencdoc-to-md 依赖声明
+#
+# 系统级依赖（需手动安装，不在 pip 范围内）：
+#   pandoc >= 2.9
+#     macOS:   brew install pandoc
+#     Ubuntu:  sudo apt install pandoc
+#     Windows: https://pandoc.org/installing.html
+#
+# Python 标准库（无需额外安装）：
+#   argparse, json, re, shutil, subprocess, tempfile, pathlib, zipfile, xml
+#
+# 可选 Python 包：
+python-docx>=0.8.11   # probe.py 的高级元数据解析备用路径（缺失时自动降级）
+pyyaml>=5.1           # 读取 config.yaml 配置文件
