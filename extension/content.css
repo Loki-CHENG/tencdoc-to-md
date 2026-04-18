@@ -1,0 +1,49 @@
+/* 浮动按钮样式 */
+#tencdoc2md-btn {
+  position: fixed;
+  right: 20px;
+  bottom: 80px;
+  z-index: 2147483647;
+  padding: 8px 14px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 20px;
+  background: linear-gradient(135deg, #7e57c2, #5e35b1);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  box-shadow: 0 4px 12px rgba(94, 53, 177, 0.35);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  user-select: none;
+}
+
+#tencdoc2md-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(94, 53, 177, 0.45);
+}
+
+#tencdoc2md-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+#tencdoc2md-btn:disabled {
+  cursor: wait;
+  opacity: 0.75;
+}
+
+#tencdoc2md-btn[data-status='working'] {
+  background: linear-gradient(135deg, #ffa726, #fb8c00);
+}
+
+#tencdoc2md-btn[data-status='waiting'] {
+  background: linear-gradient(135deg, #42a5f5, #1e88e5);
+}
+
+#tencdoc2md-btn[data-status='done'] {
+  background: linear-gradient(135deg, #66bb6a, #43a047);
+}
+
+#tencdoc2md-btn[data-status='error'] {
+  background: linear-gradient(135deg, #ef5350, #e53935);
+}

@@ -1,0 +1,77 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>TencDoc → MD</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        width: 280px;
+        padding: 14px;
+        color: #333;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 10px 0;
+      }
+      .row {
+        font-size: 12px;
+        margin-bottom: 6px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .label {
+        color: #888;
+      }
+      .value {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #333;
+        max-width: 180px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .status-ok {
+        color: #2e7d32;
+      }
+      .status-bad {
+        color: #c62828;
+      }
+      button {
+        width: 100%;
+        margin-top: 8px;
+        padding: 6px 10px;
+        border-radius: 6px;
+        border: 1px solid #ccc;
+        background: #fafafa;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      button:hover {
+        background: #f0f0f0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>TencDoc → Obsidian</h1>
+    <div class="row">
+      <span class="label">Native host</span>
+      <span id="host-status" class="value">检测中…</span>
+    </div>
+    <div class="row">
+      <span class="label">Vault</span>
+      <span id="vault" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">Inbox</span>
+      <span id="inbox" class="value">—</span>
+    </div>
+    <div class="row">
+      <span class="label">Output</span>
+      <span id="output" class="value">—</span>
+    </div>
+    <button id="open-options">打开设置</button>
+    <button id="retry">重新检测</button>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>TencDoc → MD 设置</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
+        max-width: 640px;
+        margin: 40px auto;
+        padding: 0 20px;
+        color: #333;
+        line-height: 1.6;
+      }
+      h1 {
+        font-size: 20px;
+      }
+      section {
+        margin-bottom: 24px;
+        padding: 16px 18px;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        background: #fafafa;
+      }
+      label {
+        display: block;
+        font-size: 13px;
+        color: #555;
+        margin-bottom: 4px;
+        margin-top: 10px;
+      }
+      input[type='text'] {
+        width: 100%;
+        padding: 6px 8px;
+        font-family: ui-monospace, monospace;
+        font-size: 13px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        box-sizing: border-box;
+      }
+      button {
+        padding: 8px 16px;
+        border-radius: 6px;
+        border: 1px solid #5e35b1;
+        background: #5e35b1;
+        color: white;
+        cursor: pointer;
+        font-size: 13px;
+        margin-right: 8px;
+        margin-top: 12px;
+      }
+      button.secondary {
+        background: #fafafa;
+        color: #333;
+      }
+      .hint {
+        color: #888;
+        font-size: 12px;
+        margin-top: 2px;
+      }
+      #status {
+        margin-top: 12px;
+        font-size: 13px;
+        min-height: 20px;
+      }
+      .ok {
+        color: #2e7d32;
+      }
+      .bad {
+        color: #c62828;
+      }
+      code {
+        background: #eee;
+        padding: 1px 4px;
+        border-radius: 3px;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>TencDoc → Obsidian 设置</h1>
+
+    <section>
+      <p>
+        这些设置会写到 Native host 的配置文件里（<code>~/.config/tencdoc-to-md/config.yaml</code>，
+        同时也是你在命令行用 <code>batch.py</code> 时读取的同一份配置）。
+      </p>
+      <label>Vault 根目录（绝对路径）</label>
+      <input id="vault" type="text" placeholder="/Users/you/Obsidian/MyVault" />
+      <div class="hint">例：<code>~/Obsidian/MyVault</code></div>
+
+      <label>Inbox 子目录（扩展会把 docx 下载到这里）</label>
+      <input id="inbox" type="text" placeholder="_tencdoc-inbox" />
+      <div class="hint">相对于 Vault，例：<code>_tencdoc-inbox</code>；不存在会自动创建</div>
+
+      <label>Output 子目录（Markdown 存放位置）</label>
+      <input id="output_dir" type="text" placeholder="TencDocs" />
+      <div class="hint">相对于 Vault 或写绝对路径</div>
+
+      <label>Attachments 子目录（图片存放位置）</label>
+      <input id="attachments_dir" type="text" placeholder="（留空 = 与 md 同级子目录）" />
+      <div class="hint">留空用模式 A（同级子目录），填相对路径则所有图片集中到此</div>
+
+      <button id="save">保存</button>
+      <button id="reload" class="secondary">重新加载</button>
+      <div id="status"></div>
+    </section>
+
+    <section>
+      <h2 style="font-size: 16px; margin-top: 0;">Native host 诊断</h2>
+      <div id="host-info">检测中…</div>
+    </section>
+
+    <script src="options.js"></script>
+  </body>
+</html>

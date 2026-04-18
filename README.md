@@ -35,6 +35,7 @@ python3 batch.py
 - [安装方式](#安装方式)
 - [首次配置](#首次配置)
 - [日常使用](#日常使用)
+- [Chrome 扩展（一键导出+转换）](#chrome-扩展一键导出转换)
 - [Obsidian 附件设置](#obsidian-附件设置)
 - [更新方式](#更新方式)
 - [部署验证 Checklist](#部署验证-checklist)
@@ -262,6 +263,93 @@ tencdoc ~/Downloads/某PRD.docx
 - `📋 已读取配置`：说明 config.yaml 生效了（没有这行 = pyyaml 未安装）
 - `⚠️ 警告`：需要人工处理的内容
 - `💡 提醒`：使用全局附件库时需要配置 Obsidian
+
+---
+
+## Chrome 扩展（一键导出+转换）
+
+不用手动点「菜单 → 导出为 → 本地 Word 文档」，也不用把 docx 拖来拖去。
+装上 `extension/` 这个 Chrome 扩展后，在腾讯文档/企业微信文档页面右下角会出现一个
+紫色浮动按钮 **「→ Obsidian」**，一键完成：
+
+```
+页面点击按钮
+  → 扩展模拟点击官方「菜单 → 导出为 → 本地 Word 文档(.docx)」
+  → docx 下载到 Vault 内的 inbox 子目录
+  → 通过 Native Messaging 通知本地 Python helper
+  → helper 调 convert.py 生成 Obsidian Markdown（图片抽取到附件目录）
+  → 按钮变绿：✅ 已转换
+```
+
+### 架构
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  Chrome                                                        │
+│  ┌──────────────┐  sendNativeMessage   ┌────────────────────┐  │
+│  │  扩展         │ ───────────────────▶ │ native-host/host.py │  │
+│  │ (MV3)        │ ◀─────────────────── │  (Python)          │  │
+│  └──────┬───────┘      JSON+4字节前缀  └──────────┬─────────┘  │
+│         │                                          │            │
+│  content.js                                        ▼            │
+│  - 注入 "→ Obsidian" 按钮                   subprocess        │
+│  - 模拟点击导出菜单                        调用 convert.py      │
+│                                                                │
+│  background.js                                                 │
+│  - 监听 downloads.onChanged                                    │
+│  - 把下载好的 docx 路径发给 helper                              │
+└────────────────────────────────────────────────────────────────┘
+```
+
+扩展**完全复用你日常 Chrome 的登录态**——只要你能打开这个文档，扩展就能帮你导出。
+如果某篇文档被管理员禁用了导出，扩展会直接提示失败，不做"绕过导出"的兜底
+（出于数据安全考虑，无导出权限的文档本来就不该进你的笔记库）。
+
+### 安装
+
+```bash
+# 在仓库根目录运行
+./install.sh
+```
+
+脚本会：
+1. 检查 `python3` 和 `pandoc`
+2. 生成 `native-host/host-launcher.sh`
+3. 提示你在 `chrome://extensions` 加载 `extension/` 目录并复制扩展 ID
+4. 把 Native Messaging host manifest 写到 Chrome / Edge / Brave / Arc 各自的目录
+5. 初始化 `~/.config/tencdoc-to-md/config.yaml`，记录本仓库路径
+
+装完后：
+1. 点击浏览器工具栏的扩展图标 → **打开设置**
+2. 填写 Vault 根目录（绝对路径）、inbox/output/attachments 子路径
+3. 访问 `https://doc.weixin.qq.com/` 打开任意有导出权限的文档 → 按右下角按钮
+
+### 卸载
+
+```bash
+./install.sh --uninstall
+```
+
+会删除所有浏览器的 host manifest；用户 `~/.config/tencdoc-to-md/config.yaml` 保留。
+
+### 调试技巧
+
+- 扩展状态：点扩展图标弹出的 popup 里会显示 Native host 版本和当前配置
+- 扩展日志：在任意腾讯文档页面按 `F12` → Console，关键字 `[TencDoc→MD]`
+- background 日志：`chrome://extensions` → 目标扩展 → 「检查视图」service worker
+- Native host 日志：host 崩溃时错误会通过消息回传到扩展；手动测试可以：
+
+  ```bash
+  printf '\x10\x00\x00\x00{"cmd":"ping"}' | python3 native-host/host.py | xxd
+  ```
+
+  （`\x10\x00\x00\x00` 是 16 字节小端长度前缀；会看到 `{"ok": true, ...}` 响应）
+
+### 和批量脚本的关系
+
+- 扩展/helper 和现有的 `batch.py` **共用同一份** `~/.config/tencdoc-to-md/config.yaml`
+- 扩展「一次一篇」，批量 `python3 batch.py` 还是「一次一批」
+- 两种方式互不干扰；你可以只用扩展，也可以混着用
 
 ---
 
