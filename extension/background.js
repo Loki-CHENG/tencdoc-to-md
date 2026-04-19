@@ -14,21 +14,32 @@
 const HOST_NAME = 'com.loki.tencdoc_to_md';
 const EXPECT_WINDOW_MS = 30_000; // 触发后 30 秒内出现的 .docx 下载视为我们的
 
-// 最近一次 "导出触发" 的元信息（内存即可；SW 被 kill 后丢失也无碍，只影响未完成的那一次）
-let pendingExport = null;
+// 队列版：支持用户快速连续点击多次按钮 / 多 tab 并行
+// 早期实现只有一个 pendingExport 变量，第二次点击会覆盖第一次的 tabId，
+// 导致第一次的 convert_done 回不到对应 tab。FIFO 匹配就够用。
+const pendingQueue = []; // [{ url, title, tabId, timestamp }, ...]
+
+function reapExpiredPending() {
+  const now = Date.now();
+  while (pendingQueue.length && now - pendingQueue[0].timestamp > EXPECT_WINDOW_MS) {
+    pendingQueue.shift();
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 来自 content.js 的消息
 // ─────────────────────────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'export_triggered') {
-    pendingExport = {
+    reapExpiredPending();
+    const entry = {
       url: msg.url,
       title: msg.title,
       tabId: sender.tab?.id,
       timestamp: Date.now(),
     };
-    console.log('[TencDoc→MD] pending export:', pendingExport);
+    pendingQueue.push(entry);
+    console.log('[TencDoc→MD] 入队 export, queue size =', pendingQueue.length, entry);
     sendResponse({ ok: true });
   } else if (msg.type === 'ping_host') {
     sendNative({ cmd: 'ping' })
@@ -40,20 +51,110 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then((res) => sendResponse({ ok: true, res }))
       .catch((e) => sendResponse({ ok: false, error: e.message }));
     return true;
+  } else if (msg.type === 'doctor') {
+    sendNative({ cmd: 'doctor' })
+      .then((res) => sendResponse({ ok: true, res }))
+      .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  } else if (msg.type === 'real_mouse_export') {
+    // content.js 发来一组坐标：菜单按钮 → 导出为 → docx 选项
+    // 我们用 chrome.debugger 发真实鼠标事件触发 CSS :hover 和 React isTrusted 检查
+    realMouseExport(sender.tab.id, msg.steps)
+      .then((r) => sendResponse({ ok: true, ...r }))
+      .catch((e) => {
+        console.error('[TencDoc→MD] realMouseExport 失败:', e);
+        sendResponse({ ok: false, error: e.message });
+      });
+    return true;
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 用 chrome.debugger 发真实鼠标事件（走浏览器原生输入管线，跟真手一样）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * steps 格式：[
+ *   { action: 'move', x, y, delay: 150 },   // 鼠标移到 (x,y) 然后等 delay ms
+ *   { action: 'click', x, y, delay: 300 },  // 鼠标移到 + down + up
+ * ]
+ * 坐标是相对 viewport 的（content.js 的 getBoundingClientRect 返回的就是这种）
+ */
+async function realMouseExport(tabId, steps) {
+  const target = { tabId };
+  // attach —— 常见错误：DevTools 已打开 / 另一扩展已 attach。给出可操作提示。
+  await new Promise((resolve, reject) => {
+    chrome.debugger.attach(target, '1.3', () => {
+      if (chrome.runtime.lastError) {
+        const raw = chrome.runtime.lastError.message || '';
+        if (/already attached|Another debugger/i.test(raw)) {
+          return reject(new Error(
+            '无法启动 debugger：另一个调试器已附加到这个 tab。\n' +
+            '请关闭 DevTools（F12 关掉），或禁用其他正在调试的扩展后重试。\n' +
+            '原始错误: ' + raw
+          ));
+        }
+        return reject(new Error('chrome.debugger.attach 失败: ' + raw));
+      }
+      resolve();
+    });
+  });
+
+  // Chrome 会在 tab 顶部显示一条黄色警告："...正在调试此浏览器" —— 这是正常的
+  // 我们执行完后立刻 detach 把它关掉
+
+  try {
+    for (const step of steps) {
+      const { action, x, y, delay = 100 } = step;
+      if (action === 'move') {
+        await cdpSend(target, 'Input.dispatchMouseEvent', {
+          type: 'mouseMoved', x, y, button: 'none', buttons: 0, clickCount: 0,
+        });
+      } else if (action === 'click') {
+        // 先 move 到位（让 CSS :hover 更新）
+        await cdpSend(target, 'Input.dispatchMouseEvent', {
+          type: 'mouseMoved', x, y, button: 'none', buttons: 0, clickCount: 0,
+        });
+        await sleep(30);
+        await cdpSend(target, 'Input.dispatchMouseEvent', {
+          type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1,
+        });
+        await sleep(30);
+        await cdpSend(target, 'Input.dispatchMouseEvent', {
+          type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1,
+        });
+      }
+      if (delay > 0) await sleep(delay);
+    }
+    return { ok: true };
+  } finally {
+    // 一定要 detach，否则黄条永远挂着
+    try {
+      await new Promise((resolve) => chrome.debugger.detach(target, () => resolve()));
+    } catch { /* ignore */ }
+  }
+}
+
+function cdpSend(target, method, params) {
+  return new Promise((resolve, reject) => {
+    chrome.debugger.sendCommand(target, method, params, (result) => {
+      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+      resolve(result);
+    });
+  });
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 下载监听
 // ─────────────────────────────────────────────────────────────────────────────
 chrome.downloads.onChanged.addListener(async (delta) => {
   if (delta.state?.current !== 'complete') return;
-  if (!pendingExport) return;
-  // 过期就丢掉
-  if (Date.now() - pendingExport.timestamp > EXPECT_WINDOW_MS) {
-    pendingExport = null;
-    return;
-  }
+  reapExpiredPending();
+  if (!pendingQueue.length) return;
 
   let item;
   try {
@@ -65,10 +166,10 @@ chrome.downloads.onChanged.addListener(async (delta) => {
   }
   if (!item || !item.filename.toLowerCase().endsWith('.docx')) return;
 
-  const meta = pendingExport;
-  pendingExport = null; // 消费掉
+  // FIFO 出队：最早触发的那次对应当前最早完成的下载
+  const meta = pendingQueue.shift();
 
-  console.log('[TencDoc→MD] 下载完成:', item.filename, 'for', meta.url);
+  console.log('[TencDoc→MD] 下载完成:', item.filename, 'for', meta.url, '剩余队列:', pendingQueue.length);
 
   // 调 native host 做转换
   try {
