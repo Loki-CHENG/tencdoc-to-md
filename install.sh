@@ -186,8 +186,12 @@ main() {
 STEP
     read -r -p "$(printf "${CYAN}?${RESET} 扩展 ID：")" ext_id
   fi
+  # 去掉前后空白（粘贴时容易带上）
+  ext_id="$(printf '%s' "$ext_id" | tr -d '[:space:]')"
+  # 统一小写；Chrome 生成的扩展 ID 只有 a-p 32 个字符，但宽容一点避免误杀
+  ext_id="$(printf '%s' "$ext_id" | tr '[:upper:]' '[:lower:]')"
   if ! [[ "$ext_id" =~ ^[a-p]{32}$ ]]; then
-    fail "扩展 ID 格式错误（应为 32 个 a-p 字母）：$ext_id"
+    fail "扩展 ID 格式错误（应为 32 个 a-p 字母，可从 chrome://extensions 复制）：$ext_id"
   fi
 
   # 3. 创建 launcher
