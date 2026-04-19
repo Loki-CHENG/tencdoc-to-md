@@ -59,12 +59,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   } else if (msg.type === 'real_mouse_export') {
     // content.js 发来一组坐标：菜单按钮 → 导出为 → docx 选项
     // 我们用 chrome.debugger 发真实鼠标事件触发 CSS :hover 和 React isTrusted 检查
-    realMouseExport(sender.tab.id, msg.steps)
+    // msg.session: 'begin' / 'continue' / 'end' —— 控制 attach/detach 生命周期，
+    //              避免 keepAlive 循环重复 attach 自撞（"already attached"）
+    realMouseExport(sender.tab.id, msg.steps, msg.session)
       .then((r) => sendResponse({ ok: true, ...r }))
       .catch((e) => {
         console.error('[TencDoc→MD] realMouseExport 失败:', e);
         sendResponse({ ok: false, error: e.message });
       });
+    return true;
+  } else if (msg.type === 'real_mouse_detach') {
+    // 失败恢复：不管什么状态，强制 detach，避免黄条卡着 / 下次无法 attach
+    forceDetachTab(sender.tab.id)
+      .then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ ok: false, error: e.message }));
     return true;
   }
 });
@@ -74,20 +82,45 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * 真实鼠标事件执行器。
+ *
+ * 【为什么要用 session 协议】
+ *   keepAlive 循环每 200ms 调一次 realMouseExport，如果每次都 attach/detach，
+ *   会出现竞态：第一次还没 detach 完，第二次 attach 就被拒（"already attached"），
+ *   导致整个导出流程崩在"无法启动 debugger"。
+ *
+ *   所以引入 session：attach 在"begin"时只做一次，所有"continue"调用复用连接，
+ *   "end"时统一 detach。这样黄条只挂一次，不再互相打架。
+ *
  * steps 格式：[
  *   { action: 'move', x, y, delay: 150 },   // 鼠标移到 (x,y) 然后等 delay ms
  *   { action: 'click', x, y, delay: 300 },  // 鼠标移到 + down + up
  * ]
- * 坐标是相对 viewport 的（content.js 的 getBoundingClientRect 返回的就是这种）
+ * 坐标是相对 tab viewport 的（对 iframe 铺满 tab 的场景，iframe 内坐标 = tab 坐标）。
+ *
+ * session 可选值：
+ *   'begin'    - attach debugger（如果还没 attach），执行 steps
+ *   'continue' - 复用已有 attach，执行 steps，不 attach 不 detach
+ *   'end'      - 执行 steps，然后 detach
+ *   undefined  - 向后兼容：attach → 执行 → detach（老行为）
  */
-async function realMouseExport(tabId, steps) {
-  const target = { tabId };
-  // attach —— 常见错误：DevTools 已打开 / 另一扩展已 attach。给出可操作提示。
+
+// 已 attach 的 tab 集合（key: tabId）
+const attachedTabs = new Set();
+
+async function _attachIfNeeded(target) {
+  if (attachedTabs.has(target.tabId)) return; // 已 attach，跳过
   await new Promise((resolve, reject) => {
     chrome.debugger.attach(target, '1.3', () => {
       if (chrome.runtime.lastError) {
         const raw = chrome.runtime.lastError.message || '';
-        if (/already attached|Another debugger/i.test(raw)) {
+        // "already attached" 其实不是错 —— 可能前一次导出 detach 没跑到（tab 关了等）
+        // 把它当成"已 attach"处理，并补登记一下
+        if (/already attached/i.test(raw)) {
+          attachedTabs.add(target.tabId);
+          return resolve();
+        }
+        if (/Another debugger/i.test(raw)) {
           return reject(new Error(
             '无法启动 debugger：另一个调试器已附加到这个 tab。\n' +
             '请关闭 DevTools（F12 关掉），或禁用其他正在调试的扩展后重试。\n' +
@@ -96,12 +129,41 @@ async function realMouseExport(tabId, steps) {
         }
         return reject(new Error('chrome.debugger.attach 失败: ' + raw));
       }
+      attachedTabs.add(target.tabId);
       resolve();
     });
   });
+}
 
-  // Chrome 会在 tab 顶部显示一条黄色警告："...正在调试此浏览器" —— 这是正常的
-  // 我们执行完后立刻 detach 把它关掉
+async function _detachIfAttached(target) {
+  if (!attachedTabs.has(target.tabId)) return;
+  try {
+    await new Promise((resolve) => chrome.debugger.detach(target, () => resolve()));
+  } catch { /* ignore */ }
+  attachedTabs.delete(target.tabId);
+}
+
+// detach 时清理登记（用户手动关闭调试 / tab 关闭）
+chrome.debugger.onDetach.addListener((source, reason) => {
+  if (source.tabId !== undefined) {
+    attachedTabs.delete(source.tabId);
+    console.log('[TencDoc→MD] debugger detach:', source.tabId, 'reason:', reason);
+  }
+});
+
+async function realMouseExport(tabId, steps, session) {
+  const target = { tabId };
+  const mode = session || 'legacy'; // 'begin' / 'continue' / 'end' / 'legacy'
+
+  // legacy / begin：attach
+  if (mode === 'begin' || mode === 'legacy') {
+    await _attachIfNeeded(target);
+  } else if (mode === 'continue' || mode === 'end') {
+    // continue/end 期望连接已存在；万一 tab 被 detach（reason="canceled_by_user"），补一次
+    if (!attachedTabs.has(tabId)) {
+      await _attachIfNeeded(target);
+    }
+  }
 
   try {
     for (const step of steps) {
@@ -128,11 +190,17 @@ async function realMouseExport(tabId, steps) {
     }
     return { ok: true };
   } finally {
-    // 一定要 detach，否则黄条永远挂着
-    try {
-      await new Promise((resolve) => chrome.debugger.detach(target, () => resolve()));
-    } catch { /* ignore */ }
+    // legacy / end：detach
+    if (mode === 'end' || mode === 'legacy') {
+      await _detachIfAttached(target);
+    }
+    // begin / continue：保持连接给后续调用
   }
+}
+
+/** 强制清理一个 tab 的 debugger 连接（失败恢复用） */
+async function forceDetachTab(tabId) {
+  await _detachIfAttached({ tabId });
 }
 
 function cdpSend(target, method, params) {

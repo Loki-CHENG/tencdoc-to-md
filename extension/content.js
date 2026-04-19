@@ -210,22 +210,44 @@
   //  核心流程：触发导出
   // ─────────────────────────────────────────────────────────────────────────
 
-  /** 找到右上角"文件操作"按钮 —— 返回元素（不是坐标，留给调用方决定怎么用） */
+  /** 找到右上角"文件操作"按钮 —— 返回元素（不是坐标，留给调用方决定怎么用）
+   *
+   *  历史变更：
+   *    旧版：右上角按钮 id 就是 #headerbar-filemenu，本身就是可点击的汉堡按钮
+   *    新版（≥2026-04）：#headerbar-filemenu 退化为外层容器（display: var(--display)），
+   *                      真正的可点击触发器是它内部的 #main-menu-file，带 aria-haspopup="true"
+   *    两者 getBoundingClientRect() 完全一致（容器和按钮重合），所以只要点中坐标都行；
+   *    优先用 main-menu-file 是因为它的语义更明确，未来也更稳定。
+   */
   function findMenuButton() {
-    let btn = null;
-    const c1 = document.getElementById('headerbar-filemenu');
-    if (c1 && isRealVisible(c1)) btn = c1;
-    if (!btn) {
-      btn = [...document.querySelectorAll('[aria-label*="文件操作"]')].find(isRealVisible);
-    }
-    if (!btn) {
-      btn = [...document.querySelectorAll('[aria-label="菜单"]')].find((el) => {
+    const tries = [
+      // 新版语义按钮（aria-haspopup="true"，菜单触发器）
+      () => document.getElementById('main-menu-file'),
+      // 兜底：任何 menu-button-file 类的可见节点
+      () => [...document.querySelectorAll('[class*="menu-button-file"]')]
+              .find((el) => isRealVisible(el) && el.getAttribute('aria-haspopup') === 'true'),
+      // 老版：headerbar-filemenu 本身可点
+      () => document.getElementById('headerbar-filemenu'),
+      // aria 兜底
+      () => [...document.querySelectorAll('[aria-label*="文件操作"]')].find(isRealVisible),
+      () => [...document.querySelectorAll('[aria-label="菜单"]')].find((el) => {
         if (!isRealVisible(el)) return false;
         const r = el.getBoundingClientRect();
         return r.x > window.innerWidth / 2;
-      });
+      }),
+    ];
+    for (const fn of tries) {
+      try {
+        const el = fn();
+        if (el && isRealVisible(el)) return el;
+      } catch { /* ignore */ }
     }
-    return btn;
+    return null;
+  }
+
+  /** 等右上角菜单按钮就绪 —— 用户点扩展按钮时页面可能还没加载完 */
+  async function waitForMenuButton(timeout = 8000) {
+    return waitFor(() => findMenuButton(), timeout, 150);
   }
 
   /** 从元素获取可点击的 viewport 坐标（中心点） */
@@ -237,10 +259,14 @@
   /**
    * 通过 background service worker + chrome.debugger 发真实鼠标事件。
    * 这是唯一能过 CSS :hover 和 React isTrusted 的方式（content-script 的 dispatchEvent 无效）。
+   *
+   * session: 'begin' / 'continue' / 'end' —— 让 background 把 debugger attach 维持
+   *   一整个导出会话，否则 keepAlive 循环里多次并发 attach 会互相拒绝。
+   *   不传 session 则走老行为（每次 attach+detach）。
    */
-  async function sendRealMouse(steps) {
+  async function sendRealMouse(steps, session) {
     return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage({ type: 'real_mouse_export', steps }, (resp) => {
+      chrome.runtime.sendMessage({ type: 'real_mouse_export', steps, session }, (resp) => {
         if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
         if (!resp || !resp.ok) return reject(new Error((resp && resp.error) || 'real_mouse_export 失败'));
         resolve(resp);
@@ -248,23 +274,37 @@
     });
   }
 
+  /** 强制清理 debugger 连接（失败恢复用） */
+  async function forceDetachMouse() {
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: 'real_mouse_detach' }, () => resolve());
+    });
+  }
+
   async function exportToDocx() {
     LOG('开始触发导出…');
 
-    // Step 1：找右上角"文件操作"汉堡按钮（只是找元素，不点击 —— 留给真鼠标）
-    const menuBtn = findMenuButton();
-    if (!menuBtn) throw new Error('找不到右上角"文件操作"按钮（headerbar-filemenu）');
+    // Step 1：等右上角"文件操作"按钮出现
+    //   诊断发现：新版 DOM 里真正的触发器是 #main-menu-file（aria-haspopup="true"），
+    //   #headerbar-filemenu 退化成了外层容器（坐标相同），findMenuButton 已优先找前者。
+    //   用户点扩展按钮时页面可能还没加载完，给 8s 宽限。
+    const menuBtn = await waitForMenuButton(8000).catch(() => null);
+    if (!menuBtn) {
+      throw new Error('找不到右上角"文件操作"按钮（#main-menu-file / #headerbar-filemenu 都没出现，请等页面加载完再试）');
+    }
     const menuBtnPos = centerOf(menuBtn);
     LOG('菜单按钮:', menuBtn, menuBtnPos, 'id:', menuBtn.id, 'aria-label:', menuBtn.getAttribute('aria-label'));
 
     // Step 2：通过 background 用 chrome.debugger 发真实鼠标点击菜单按钮
     //   —— content-script 的 dispatchEvent 过不了 CSS :hover / React isTrusted，
     //      必须用 chrome.debugger + CDP Input.dispatchMouseEvent。
+    //   用 session='begin' 让 background attach debugger 并"保持连接"，
+    //   后续 keepAlive 循环 / 点 docx 都复用这个连接，不再重复 attach。
     LOG('→ 真实鼠标点击菜单按钮');
     await sendRealMouse([
       { action: 'move', x: menuBtnPos.x, y: menuBtnPos.y, delay: 100 },
       { action: 'click', x: menuBtnPos.x, y: menuBtnPos.y, delay: 300 },
-    ]);
+    ], 'begin');
     // 等菜单动画 + DOM 挂载
     await sleep(300);
 
@@ -289,33 +329,48 @@
         if (r.x > 2) return el;
       }
       return null;
-    }, 3000);
+    }, 4000).catch(() => {
+      throw new Error(
+        '菜单展开后找不到"导出为" LI（.mainmenu-submenu-export-as）。' +
+        '可能原因：一级菜单其实没打开（CDP 点击被拒），或腾讯文档又改了 class。'
+      );
+    });
     const exportPos = centerOf(exportItem);
     LOG('导出为 LI:', exportItem, exportPos, 'cls:', exportItem.className);
 
-    // Step 4：真实鼠标移到"导出为"（触发 :hover → 子菜单渲染）
+    // Step 4：真实鼠标移到"导出为"（触发 :hover → Dui 才会挂载子菜单 DOM）
+    //   诊断证实：没 hover 过时，.mainmenu-item-export-as-docx 节点根本不在 DOM 里，
+    //   需要真实鼠标 move 让 Dui React 组件进入 hover 状态后才渲染子菜单。
+    //   session='continue' 复用 begin 时的 attach，不再重复 attach。
     LOG('→ 真实鼠标 hover "导出为"');
     await sendRealMouse([
       { action: 'move', x: exportPos.x, y: exportPos.y, delay: 400 },
-    ]);
+    ], 'continue');
 
-    // 启动"保活"：每 100ms 再 dispatch 一次 move 到"导出为"坐标
-    //   —— 防止在 DOM 查找的空档里鼠标事件把子菜单收起
-    //   注意：这里的保活只是 dispatch 合成事件（维持 React 状态），
-    //   真实 CSS :hover 已经由上面的 move 触发了，不需要持续真实 move
+    // 启动"保活"：周期性地用真实鼠标再 move 到"导出为"坐标，
+    // 防止在 DOM 查找的空档里 Dui 认为鼠标离开了而收起子菜单。
+    // 以前只 dispatchEvent 合成事件 + classList 兜底 —— 那对 Dui 的 React hover 状态没有用，
+    // 只有 CDP 真鼠标才能维持 isTrusted 的 hover state。
+    //
+    // 全部用 session='continue'，复用同一个 debugger attach，避免重复 attach 自撞。
     let keepAlive = true;
     const keepAliveLoop = (async () => {
       while (keepAlive) {
         try {
-          // 给 exportItem 持续 hover，维持 React 组件的内部 hover 状态
+          // 真实 CDP move 到"导出为"中心，维持 React hover 状态 → 子菜单保持渲染
+          await sendRealMouse([
+            { action: 'move', x: exportPos.x, y: exportPos.y, delay: 0 },
+          ], 'continue');
+          // 同时兜底：加 visible 类 + dispatch 合成事件（双保险）
           hover(exportItem);
           exportItem.classList.add('dui-menu-submenu-visible');
         } catch { /* ignore */ }
-        await sleep(100);
+        await sleep(200);
       }
     })();
 
-    // Step 5：等子菜单里的 docx 选项出现在 DOM 里（真 hover 后它就渲染了）
+    // Step 5：等子菜单里的 docx 选项出现在 DOM 里（真 hover 后它才渲染）
+    //   超时从 4s 延到 8s —— 某些慢文档里 Dui 组件挂载子菜单需要的时间不止 4s。
     const wordItem = await waitFor(() => {
       // 专属 class：mainmenu-item-export-as-docx
       const cand = [...document.querySelectorAll('li.mainmenu-item-export-as-docx, [class*="mainmenu-item-export-as-docx"]')]
@@ -337,21 +392,29 @@
         }
       }
       return null;
-    }, 4000).catch((e) => {
+    }, 8000).catch(async () => {
+      // 先停 keepAlive 循环并等它退出，让在飞的 CDP 调用落地，
+      // 外层 catch 再 forceDetachMouse 时才不会跟循环里的 move 抢连接。
       keepAlive = false;
-      throw e;
+      try { await keepAliveLoop; } catch { /* ignore */ }
+      // 给出可诊断的错误：DOM 里到底有没有 docx 节点
+      const hasNode = !!document.querySelector('.mainmenu-item-export-as-docx');
+      const nodeInfo = hasNode ? 'DOM 里有 docx 节点但不可见（可能被 opacity/transform 隐藏）' : 'DOM 里根本没有 docx 节点（Dui 没认可 hover 状态）';
+      throw new Error(`等 docx 选项超时 8s：${nodeInfo}`);
     });
     const wordPos = centerOf(wordItem);
     LOG('Word 选项:', wordItem, wordPos, 'cls:', wordItem.className);
 
     // Step 6：真实鼠标移到 docx 选项 + 点击
+    //   先停掉 keepAlive 循环，避免它跟最后这次 CDP 调用并发抢连接
+    //   session='end' 让 background 在这次调用结束后 detach debugger（收起黄条）
+    keepAlive = false;
+    await keepAliveLoop;
     LOG('→ 真实鼠标点击 docx 选项');
     await sendRealMouse([
       { action: 'move', x: wordPos.x, y: wordPos.y, delay: 100 },
       { action: 'click', x: wordPos.x, y: wordPos.y, delay: 100 },
-    ]);
-    keepAlive = false;
-    await keepAliveLoop;
+    ], 'end');
     LOG('✅ 已触发导出');
 
     // 通知 background：这次下载属于我们
@@ -396,6 +459,9 @@
         btn.dataset.status = 'waiting';
       } catch (e) {
         ERR(e);
+        // 失败恢复：不管在哪一步挂的，强制 detach debugger，避免黄条一直挂着
+        // + 下次点按钮时 attach 失败（"already attached"）。
+        try { await forceDetachMouse(); } catch { /* ignore */ }
         btn.textContent = '失败：' + e.message.slice(0, 20);
         btn.dataset.status = 'error';
         alert(
@@ -461,6 +527,50 @@
     });
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  //  Frame 选择：腾讯文档把编辑器渲染在一个 id="very_fast_inner" 的 iframe 里
+  //  manifest 用 all_frames: true 注入，但只有"能找到编辑器 DOM 的 frame"才注入按钮，
+  //  否则顶层 frame 也会画一个按钮，跟 iframe 里的按钮叠在一起。
+  // ─────────────────────────────────────────────────────────────────────────
+  function isEditorFrame() {
+    // 编辑器 frame 才会有这些 id（即便页面还没完全加载，至少有一个能找到说明结构正确）
+    if (document.getElementById('main-menu-file')) return true;
+    if (document.getElementById('headerbar-filemenu')) return true;
+    if (document.querySelector('[class*="menu-button-file"]')) return true;
+    return false;
+  }
+
+  /**
+   * 等编辑器 DOM 出现，最多等 timeout ms。
+   * 用 MutationObserver + 轮询双保险（腾讯文档的菜单挂载时机不稳定）。
+   */
+  function waitForEditorFrame(timeout = 15000) {
+    return new Promise((resolve) => {
+      if (isEditorFrame()) return resolve(true);
+      const start = Date.now();
+      const obs = new MutationObserver(() => {
+        if (isEditorFrame()) {
+          obs.disconnect();
+          clearInterval(timer);
+          resolve(true);
+        }
+      });
+      obs.observe(document.documentElement, { subtree: true, childList: true });
+      // 兜底轮询（有时 MutationObserver 错过事件）
+      const timer = setInterval(() => {
+        if (isEditorFrame()) {
+          obs.disconnect();
+          clearInterval(timer);
+          resolve(true);
+        } else if (Date.now() - start > timeout) {
+          obs.disconnect();
+          clearInterval(timer);
+          resolve(false);
+        }
+      }, 300);
+    });
+  }
+
   // URL 变化时（SPA 切换文档）重新注入
   let lastHref = location.href;
   new MutationObserver(() => {
@@ -470,10 +580,21 @@
     }
   }).observe(document, { subtree: true, childList: true });
 
-  // 首次注入
-  if (document.body) {
-    injectButton();
-  } else {
-    window.addEventListener('DOMContentLoaded', injectButton);
-  }
+  // 首次注入：只在编辑器 frame 里注入按钮
+  //   非编辑器 frame（顶层壳）静默退出，但 content script 仍然在跑（无害）
+  (async () => {
+    const ready = await waitForEditorFrame(15000);
+    if (!ready) {
+      // 不是编辑器 frame —— 比如这是顶层壳 frame，编辑器在子 iframe 里
+      // 那个子 iframe 也注入了 content script，按钮会由它来挂
+      LOG('当前 frame 不是编辑器（', location.href.slice(0, 80), '），跳过按钮注入');
+      return;
+    }
+    LOG('当前 frame 是编辑器（', location.href.slice(0, 80), '），注入浮动按钮');
+    if (document.body) {
+      injectButton();
+    } else {
+      window.addEventListener('DOMContentLoaded', injectButton);
+    }
+  })();
 })();

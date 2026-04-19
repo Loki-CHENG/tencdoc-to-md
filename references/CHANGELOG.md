@@ -4,6 +4,53 @@
 
 ---
 
+## [0.6.3] — 2026-04-19（浏览器扩展：端到端可用）
+
+本次迭代聚焦把 Chrome 扩展 `TencDoc → Obsidian` 从"能装上但点不动"修到"一键触发 → 下载 → Native Host 转换 → 回写按钮状态"全链路可跑通。过程中踩了四个坑，按排查顺序记录。
+
+### Fixed
+
+- **E-01：`findMenuButton` 找不到"文件操作"按钮** — 腾讯文档新版 DOM 里真正的触发器是 `#main-menu-file`（`aria-haspopup="true"`，`div` 元素），`#headerbar-filemenu` 退化成外层容器。`content.js` 重写 `findMenuButton()`：优先 `#main-menu-file`，回退到 `#headerbar-filemenu`、`[class*="menu-button-file"]`、aria-label 文本匹配；`waitForMenuButton(timeout=8000)` 给慢加载页面宽限窗口。
+
+- **E-02：content-script 不在编辑器 frame 里执行** — 腾讯文档把编辑器渲染在 `<iframe id="very_fast_inner">` 内，顶层 frame 里根本没有菜单 DOM。诊断时所有选择器都返回空／false 就是这个原因。修复：`manifest.json` 加 `"all_frames": true` 让内容脚本注入所有 frame；`content.js` 新增 `isEditorFrame()` + `waitForEditorFrame(15000)`，只在能找到编辑器 DOM 的 frame 里注入浮动按钮，顶层 frame 跳过，避免按钮重影。
+
+- **E-03：合成事件过不了 Dui（React）组件的 isTrusted + `:hover` 检查** — `dispatchEvent` 的 `MouseEvent` 只能模拟"假鼠标"，Dui 菜单的二级子菜单（`.mainmenu-item-export-as-docx`）是 lazy-mount：必须真鼠标 hover 过"导出为"之后 React 状态才挂载子菜单 DOM。修复：`background.js` 用 `chrome.debugger` attach + CDP `Input.dispatchMouseEvent` 发真实鼠标事件（`mouseMoved` / `mousePressed` / `mouseReleased`），走浏览器原生输入管线，isTrusted=true，CSS `:hover` 也生效。`manifest.json` 加 `"debugger"` 权限。
+
+- **E-04：keepAlive 循环重复 attach/detach 自撞（"already attached" / "无法启动 debugger"）** — 为了防止 DOM 查找空档里 Dui 收起子菜单，content.js 有个 200ms 的 keepAlive 循环持续给"导出为"发真鼠 move 维持 hover。最初每次循环都 attach+detach，导致上一次 detach 还没跑完下一次 attach 就被拒。引入 **session 协议**：`sendRealMouse(steps, session)` 的 `session` 取 `'begin'` / `'continue'` / `'end'`，整个导出会话只 attach 一次、keepAlive 循环都用 `'continue'` 复用连接、最终点 docx 用 `'end'` 统一 detach。`background.js` 用 `attachedTabs` Set 做状态机，监听 `chrome.debugger.onDetach` 清理登记（用户手动关 DevTools / tab 关闭的场景）。
+
+- **E-05：Step 6 最后一次 CDP 调用跟 keepAlive 循环抢连接** — 之前的顺序是"先点 docx → 再停 keepAlive"，最后一次 `action='click'`（session='end' 会 detach）跟循环里飞行中的 `action='move'`（session='continue'）竞争。改为**先 `keepAlive=false; await keepAliveLoop;`，确认循环退出后再发 `'end'` 的 click**。同时 Step 5 的 catch 也改为 async，抛错前 `await keepAliveLoop` 让循环落地，外层 catch 再 `forceDetachMouse()` 清理。
+
+### Added
+
+- **`extension/background.js`**：
+  - `attachedTabs` Set + `_attachIfNeeded` / `_detachIfAttached` 幂等 helper（`"already attached"` 归一化处理，补登记）
+  - `realMouseExport(tabId, steps, session)` session 协议：`'begin'`/`'continue'`/`'end'`/`'legacy'` 四种模式
+  - `chrome.debugger.onDetach` 监听器：外部原因（DevTools 关闭 / tab 关闭）detach 时同步清理 `attachedTabs`
+  - `real_mouse_detach` 消息处理：content.js 失败路径调用的强制清理接口 `forceDetachTab(tabId)`
+  - 下载匹配从单变量 `pendingExport` 改为 FIFO `pendingQueue`：支持用户快速连续点或多 tab 并行导出
+  - `reapExpiredPending()`：30s 窗口外的 pending 过期清理
+
+- **`extension/content.js`**：
+  - `isEditorFrame()` / `waitForEditorFrame()` iframe 选择逻辑，MutationObserver + 轮询双保险
+  - `sendRealMouse(steps, session)` 改签名支持 session；新增 `forceDetachMouse()` 供失败恢复
+  - keepAlive 循环：每 200ms 真鼠 move 到"导出为"中心 + `hover()` 合成事件 + `classList.add('dui-menu-submenu-visible')` 三重保险
+  - 按钮 `data-status` 状态机：`idle` / `working` / `waiting` / `done` / `error`；done 状态下左键 = 复制 md_path，右键任意状态 = 复制最近路径；模块级 `lastMdPath` 跨次持久
+  - CDP 冲突时的诊断错误文案（提示关 DevTools 或其他扩展）
+
+- **`extension/manifest.json`**：`"debugger"` 权限、`"all_frames": true`、`host_permissions` 加 `docs.qq.com/*`
+
+### Changed
+
+- `manifest.json` version → 0.6.3
+- `sendRealMouse` 默认行为保持兼容：未传 session 时走 legacy 模式（每次 attach+detach），与旧调用点兼容
+
+### Known Issues / Debt
+
+- 如果用户在导出途中打开 DevTools，`chrome.debugger` 会被 DevTools 抢走（`Another debugger is already attached`），扩展无法恢复。目前错误文案已提示，但没有自动 fallback。
+- Dui 的 `keepAlive` 循环频率（200ms）是经验值，更慢的机器可能需要调。
+
+---
+
 ## [0.5.0] — 2026-04-13
 
 ### Added
