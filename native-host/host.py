@@ -111,6 +111,94 @@ def resolve_path(p: str, base: str | None = None) -> str:
 
 
 # ───────────────────────────────────────────────────────────────────────────
+#  macOS TCC workaround
+# ───────────────────────────────────────────────────────────────────────────
+def _is_tcc_protected(path: str) -> bool:
+    """是否落在 macOS TCC 保护目录（Downloads/Documents/Desktop）。
+
+    这些目录下，Native host 继承 Chrome 的 TCC 上下文后无法直接读取。
+    """
+    real = os.path.realpath(os.path.expanduser(path))
+    home = os.path.expanduser("~")
+    for sub in ("Downloads", "Documents", "Desktop"):
+        guarded = os.path.join(home, sub)
+        if real == guarded or real.startswith(guarded + os.sep):
+            return True
+    return False
+
+
+def _move_via_finder(src: str, dst_dir: Path) -> str | None:
+    """通过 osascript 让 Finder 把文件移到非 TCC 目录，返回新路径。
+
+    Finder 进程自己就有 Downloads 读权限，不会继承 Chrome 的 TCC。
+    """
+    src = os.path.realpath(src)
+    dst_dir = Path(os.path.realpath(str(dst_dir)))
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    target = dst_dir / Path(src).name
+
+    # 若同名，加时间戳防冲突
+    if target.exists():
+        stem = target.stem
+        suffix = target.suffix
+        ts = int(time.time())
+        target = dst_dir / f"{stem}.{ts}{suffix}"
+
+    # AppleScript：tell Finder to move POSIX file X to POSIX file Y
+    # 注意：Finder 的 "move" 如果 X 原位置就在 Y 的父目录，会拒绝；这里不会
+    script = f'''
+    tell application "Finder"
+        set srcFile to POSIX file "{src}" as alias
+        set dstFolder to POSIX file "{str(dst_dir)}" as alias
+        move srcFile to dstFolder with replacing
+    end tell
+    '''
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            # Finder 移动失败（可能因重名），降级尝试 ditto 工具 —— ditto 也走用户空间
+            return _move_via_ditto(src, str(target))
+        # Finder 移动成功时，目标文件名 = 源文件名（放到 dst_dir 下）
+        moved_path = dst_dir / Path(src).name
+        if moved_path.exists():
+            return str(moved_path)
+        # 如果被 Finder 自动重命名了，找最新的 docx
+        cands = sorted(dst_dir.glob("*.docx"), key=lambda p: p.stat().st_mtime, reverse=True)
+        return str(cands[0]) if cands else None
+    except Exception:
+        return _move_via_ditto(src, str(target))
+
+
+def _move_via_ditto(src: str, dst: str) -> str | None:
+    """ditto 是 macOS 系统拷贝工具，偶尔能绕过 TCC（特别是对同一 volume 内的 move）。
+
+    作为 Finder 失败时的兜底。
+    """
+    try:
+        proc = subprocess.run(
+            ["ditto", src, dst],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if proc.returncode == 0 and os.path.exists(dst):
+            # ditto 是拷贝不是移动，拷贝成功后删掉源
+            try:
+                os.remove(src)
+            except Exception:
+                pass  # 删不掉也无所谓，有副本了
+            return dst
+    except Exception:
+        pass
+    return None
+
+
+# ───────────────────────────────────────────────────────────────────────────
 #  命令实现
 # ───────────────────────────────────────────────────────────────────────────
 def cmd_ping(_msg: dict) -> dict:
@@ -168,6 +256,23 @@ def cmd_convert(msg: dict) -> dict:
     if not os.path.exists(docx_path):
         raise RuntimeError(f"docx 文件不存在：{docx_path}")
 
+    # macOS TCC 兼容：若直接读被拒（PermissionError），改走 Finder 把文件
+    # 搬到非 TCC 目录再处理。如果用户已给 Chrome "完全磁盘访问"，这里直接
+    # 读成功就跳过整个 workaround。
+    if sys.platform == "darwin" and _is_tcc_protected(docx_path):
+        try:
+            # 探测一下：能不能读头几个字节？
+            with open(docx_path, "rb") as _f:
+                _f.read(4)
+        except PermissionError:
+            # 确实被 TCC 拒了，启用 Finder workaround
+            tmp_dir = Path(repo_dir) / "tmp-downloads"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            moved = _move_via_finder(docx_path, tmp_dir)
+            if moved and os.path.exists(moved):
+                docx_path = moved
+            # 如果搬不动，下面 convert.py 启动时会再次暴露错误
+
     cmd = [
         sys.executable,
         str(convert_py),
@@ -183,6 +288,22 @@ def cmd_convert(msg: dict) -> dict:
     env = os.environ.copy()
     # convert.py 可能会尝试读 config.yaml；我们让它看到 repo_dir 下那份
     env["TENCDOC_CONFIG"] = str(Path(repo_dir) / "config.yaml")
+
+    # macOS/Linux GUI 启动的子进程 PATH 很窄（通常只有 /usr/bin:/bin:/usr/sbin:/sbin），
+    # 看不到 Homebrew (/usr/local/bin、/opt/homebrew/bin) 里的 pandoc 等工具。
+    # 这里把常见路径并入 PATH。
+    extra_paths = [
+        "/usr/local/bin",      # Intel Mac Homebrew
+        "/opt/homebrew/bin",   # Apple Silicon Homebrew
+        "/opt/homebrew/sbin",
+        "/usr/local/sbin",
+    ]
+    cur_path = env.get("PATH", "")
+    path_parts = cur_path.split(os.pathsep) if cur_path else []
+    for p in extra_paths:
+        if p not in path_parts and os.path.isdir(p):
+            path_parts.insert(0, p)
+    env["PATH"] = os.pathsep.join(path_parts)
 
     proc = subprocess.run(
         cmd, capture_output=True, text=True, env=env, cwd=repo_dir
@@ -214,11 +335,95 @@ def cmd_convert(msg: dict) -> dict:
     }
 
 
+def cmd_doctor(_msg: dict) -> dict:
+    """健康检查：一次返回所有关键环境信息，方便 UI 侧排障。
+
+    检查项：
+      - host 版本、Python 版本、平台
+      - 配置是否存在、关键字段是否填了
+      - repo_dir 和 convert.py 是否存在
+      - pandoc 是否能在增强 PATH 下找到
+      - macOS 下 Chrome 是否对 ~/Downloads 有 Full Disk Access（通过尝试读探测）
+    """
+    report: dict = {
+        "ok": True,
+        "cmd": "doctor",
+        "version": __version__,
+        "python": sys.version.split()[0],
+        "platform": sys.platform,
+        "checks": [],
+    }
+
+    def add(name: str, passed: bool, detail: str = "") -> None:
+        report["checks"].append({"name": name, "ok": passed, "detail": detail})
+        if not passed:
+            report["ok"] = False
+
+    # 1. config
+    cfg = load_config()
+    add("config.yaml 存在", CONFIG_FILE.exists(), str(CONFIG_FILE))
+    add("repo_dir 已设置", bool(cfg.get("repo_dir")), cfg.get("repo_dir", "(空)"))
+    add("vault 已设置", bool(cfg.get("vault")), cfg.get("vault", "(空)"))
+
+    # 2. repo & convert.py
+    repo_dir = cfg.get("repo_dir", "")
+    if repo_dir:
+        add("repo_dir 目录存在", Path(repo_dir).exists(), repo_dir)
+        cp = Path(repo_dir) / "convert.py"
+        add("convert.py 存在", cp.exists(), str(cp))
+
+    # 3. pandoc
+    env_path_parts = (os.environ.get("PATH", "") or "").split(os.pathsep)
+    for p in ("/usr/local/bin", "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/sbin"):
+        if p not in env_path_parts and os.path.isdir(p):
+            env_path_parts.insert(0, p)
+    pandoc_path = ""
+    for p in env_path_parts:
+        cand = os.path.join(p, "pandoc")
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            pandoc_path = cand
+            break
+    add("pandoc 可执行", bool(pandoc_path), pandoc_path or "(未找到)")
+
+    # 4. macOS Full Disk Access —— 试读 ~/Downloads 下任意文件
+    if sys.platform == "darwin":
+        dl = Path(os.path.expanduser("~/Downloads"))
+        if dl.exists():
+            try:
+                items = list(dl.iterdir())
+                # 只要能列目录就说明有权限（TCC 拦的不是 stat 是 open）；进一步 open 任意一个
+                can_read = True
+                sample = ""
+                for it in items:
+                    if it.is_file():
+                        try:
+                            with open(it, "rb") as f:
+                                f.read(4)
+                            sample = str(it)
+                            break
+                        except PermissionError:
+                            can_read = False
+                            sample = str(it)
+                            break
+                        except Exception:
+                            continue
+                add(
+                    "Chrome 对 ~/Downloads 有读权限",
+                    can_read,
+                    sample or "(目录为空，无法确认)",
+                )
+            except PermissionError:
+                add("Chrome 对 ~/Downloads 有读权限", False, "列目录失败")
+
+    return report
+
+
 HANDLERS = {
     "ping": cmd_ping,
     "get_config": cmd_get_config,
     "set_config": cmd_set_config,
     "convert": cmd_convert,
+    "doctor": cmd_doctor,
 }
 
 
