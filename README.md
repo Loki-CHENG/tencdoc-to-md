@@ -298,6 +298,10 @@ tencdoc ~/Downloads/某PRD.docx
   → 按钮变绿：✅ 已转换
 ```
 
+### 演示
+
+![一键导出演示](docs/demo.gif)
+
 ### 架构
 
 ```
