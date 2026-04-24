@@ -367,6 +367,25 @@ def _wikilink_to_img(wikilink_match: re.Match) -> str:
     return f'<img src="{path}"{alt_attr} {_IMG_STYLE_ATTR}>'
 
 
+def _docx_widths_to_pct(twips: List[int]) -> List[str]:
+    """Convert docx tblGrid widths (twips) to percentage strings.
+
+    Strictly preserves the original ratio — no minimum floor. The last
+    column absorbs rounding error so the set sums to exactly 100.00%.
+    Returns ``[]`` if the input is unusable (empty, all-zero, negatives).
+    """
+    clean = [w for w in twips if w > 0]
+    if not clean or len(clean) != len(twips):
+        return []
+    total = sum(clean)
+    if total <= 0:
+        return []
+    raw = [w / total * 100 for w in clean]
+    rounded = [round(v, 2) for v in raw[:-1]]
+    rounded.append(round(100 - sum(rounded), 2))
+    return [f"{p}%" for p in rounded]
+
+
 def _compute_col_widths(tree: _TableTree) -> list[str]:
     """T-22b: Return percentage width strings for each column.
 
@@ -438,7 +457,11 @@ def _compute_col_widths(tree: _TableTree) -> list[str]:
     return [f"{p}%" for p in raw]
 
 
-def _clean_html_table(html_text: str, tree: Optional["_TableTree"] = None) -> str:
+def _clean_html_table(
+    html_text: str,
+    tree: Optional["_TableTree"] = None,
+    docx_widths: Optional[List[int]] = None,
+) -> str:
     """Strip junk attributes from the original HTML table."""
     s = html_text
     # Strip class/style from table structure elements only (not from <span> etc.)
@@ -446,6 +469,17 @@ def _clean_html_table(html_text: str, tree: Optional["_TableTree"] = None) -> st
     s = _TABLE_STYLE_RE.sub(r'\1', s)
     # Remove tbody/thead/tfoot wrappers (pandoc emits tbody even for simple tables).
     s = re.sub(r"</?(tbody|thead|tfoot)\s*>", "", s, flags=re.IGNORECASE)
+    # T-22c: Remove pandoc's native <colgroup>...</colgroup> block so we don't
+    # end up with two colgroups after our own injection below. Pandoc emits
+    # <col style="width:..." /> inside this block based on grid units relative
+    # to --columns=72 — neither accurate nor what we want; we replace it with
+    # either docx tblGrid widths or the content-aware heuristic.
+    s = re.sub(
+        r"<colgroup\b[^>]*>.*?</colgroup>",
+        "",
+        s,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
     # Remove <p> inside <td> with single paragraph — more compact source.
     # IMPORTANT: do NOT use re.DOTALL — it would cross cell/row boundaries
     # and corrupt multi-cell content. Without DOTALL, only single-line cells match.
@@ -475,6 +509,42 @@ def _clean_html_table(html_text: str, tree: Optional["_TableTree"] = None) -> st
         flags=re.DOTALL,
     )
 
+    # T-23: Compact vertical spacing inside table cells. Sources of excess
+    # whitespace when rendered in Obsidian/browsers:
+    #   A. <p> margin-block (1em top+bottom)
+    #   B. <ul>/<ol> margin-block (1em top+bottom)
+    #   C. <li> margin-block (0.25-0.5em)
+    #   D. <blockquote> margin + padding (1em + 10px)
+    # Strategy: preserve paragraph breaks as <br>, strip <p> wrappers entirely,
+    # inject compact inline margins on list/quote elements so Obsidian's
+    # default CSS can't expand them. Scope is limited to this table block.
+    # 1. Preserve visual line-break between paragraphs before stripping tags.
+    s = re.sub(r"</p>\s*<p\b[^>]*>", "<br>", s, flags=re.IGNORECASE)
+    # 2. Strip remaining <p>/</p> open/close tags (T-05, T-07, T-07b above
+    # become subsumed by this but are kept for clarity).
+    s = re.sub(r"</?p\b[^>]*>", "", s, flags=re.IGNORECASE)
+    # 3. Compact <ul>/<ol> margins. Negative lookahead skips tags that
+    # already carry an inline style (e.g. tags inside nested-table content
+    # previously stylized by an outer pass).
+    s = re.sub(
+        r'<(ul|ol)\b(?![^>]*style=)',
+        r'<\1 style="margin:0.2em 0;padding-left:1.4em"',
+        s, flags=re.IGNORECASE,
+    )
+    # 4. <li> zero margin/padding.
+    s = re.sub(
+        r'<li\b(?![^>]*style=)',
+        '<li style="margin:0;padding:0"',
+        s, flags=re.IGNORECASE,
+    )
+    # 5. <blockquote> compact margin + thin left rule (keeps quote semantic
+    # visible without Obsidian's default 1em margin blow-up).
+    s = re.sub(
+        r'<blockquote\b(?![^>]*style=)',
+        '<blockquote style="margin:0.2em 0;padding-left:0.8em;border-left:2px solid #ddd"',
+        s, flags=re.IGNORECASE,
+    )
+
     # T-21: Apply size constraints to all <img> tags inside this table so they
     # don't overwhelm adjacent text columns.
     s = _IMG_TAG_RE.sub(_constrain_img, s)
@@ -498,10 +568,17 @@ def _clean_html_table(html_text: str, tree: Optional["_TableTree"] = None) -> st
         '<table style="table-layout:fixed;width:100%"',
         s, count=1, flags=re.IGNORECASE,
     )
-    # T-22b: Inject <colgroup> with content-aware column widths immediately
-    # after the opening <table> tag so each column gets proportional space.
+    # T-22b: Inject <colgroup> with column widths immediately after the
+    # opening <table> tag so each column gets proportional space.
+    # Priority:
+    #   1. docx <w:tblGrid> widths — strict original ratio
+    #   2. content-aware heuristic (_compute_col_widths) as fallback
     if tree is not None:
-        col_widths = _compute_col_widths(tree)
+        col_widths: list[str] = []
+        if docx_widths and len(docx_widths) == tree.max_cols():
+            col_widths = _docx_widths_to_pct(docx_widths)
+        if not col_widths:
+            col_widths = _compute_col_widths(tree)
         if col_widths:
             colgroup = "<colgroup>" + "".join(
                 f'<col style="width:{w}">' for w in col_widths
@@ -599,17 +676,51 @@ def clean_tables(md: str, ctx: CleanerContext) -> str:
     total = 0
     to_pipe = 0
     kept_html = 0
+    widths_from_docx = 0
+    widths_from_heuristic = 0
+
+    table_grids = list(getattr(ctx.probe, "table_grids", []) or [])
+    # Global table index requires counting BOTH HTML blocks (TABLE_BLOCK_RE)
+    # AND pandoc's native GFM pipe tables (_GFM_TABLE_RE) in document order —
+    # pandoc preserves docx table order across both output forms, so the
+    # N-th table overall (whatever form) ↔ N-th tblGrid. We precompute the
+    # start positions of native pipe tables so each HTML block substitution
+    # can look up how many pipe tables preceded it.
+    pipe_starts = [pm.start() for pm in _GFM_TABLE_RE.finditer(md)]
+
+    def _global_idx_for_html(html_start: int, html_block_ord: int) -> int:
+        n_pipe_before = sum(1 for p in pipe_starts if p < html_start)
+        return n_pipe_before + html_block_ord
+
+    html_block_ord = [0]  # mutable counter for HTML-block substitution order
 
     def _repl(m: re.Match) -> str:
-        nonlocal total, to_pipe, kept_html
+        nonlocal total, to_pipe, kept_html, widths_from_docx, widths_from_heuristic
         total += 1
         raw = m.group(0)
         tree = _parse_table(raw)
+        ncols = tree.max_cols()
+        gi = _global_idx_for_html(m.start(), html_block_ord[0])
+        html_block_ord[0] += 1
+        docx_widths = None
+        if 0 <= gi < len(table_grids):
+            grid = table_grids[gi]
+            if grid and len(grid) == ncols:
+                docx_widths = grid
         if _can_pipe(tree):
             to_pipe += 1
+            # Pipe tables can't encode column widths in GFM syntax; the
+            # grid index was still consumed above to stay aligned with
+            # docx table order for subsequent HTML tables.
             return _grid_to_pipe(tree)
         kept_html += 1
-        return _clean_html_table(raw, tree)
+        if docx_widths:
+            widths_from_docx += 1
+        elif ncols >= 2:
+            # A heuristic will run inside _clean_html_table as long as
+            # tree has 2+ columns; count the intent here.
+            widths_from_heuristic += 1
+        return _clean_html_table(raw, tree, docx_widths=docx_widths)
 
     md = TABLE_BLOCK_RE.sub(_repl, md)
 
@@ -626,6 +737,8 @@ def clean_tables(md: str, ctx: CleanerContext) -> str:
             "total_html_tables": total,
             "degraded_to_pipe": to_pipe,
             "kept_as_html": kept_html,
+            "widths_from_docx": widths_from_docx,
+            "widths_from_heuristic": widths_from_heuristic,
         },
     )
     return md

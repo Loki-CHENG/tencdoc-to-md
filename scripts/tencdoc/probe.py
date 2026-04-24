@@ -31,6 +31,11 @@ class DocxProbe:
     has_footnotes: bool = False
     raw_doc_length: int = 0
     is_tencent_doc: bool = False
+    # Ordered list of `<w:tblGrid>` column widths (twips) per table in
+    # document order. Nested tables are included in the order their
+    # opening <w:tbl> tag appears. Empty list when the table lacks a
+    # tblGrid (e.g. malformed or auto-sized tables).
+    table_grids: List[List[int]] = field(default_factory=list)
 
     def summary(self) -> Dict:
         return {
@@ -43,6 +48,7 @@ class DocxProbe:
             "has_vmerge": self.has_vmerge,
             "has_footnotes": self.has_footnotes,
             "is_tencent_doc": self.is_tencent_doc,
+            "table_count": len(self.table_grids),
         }
 
 
@@ -57,6 +63,34 @@ _STYLE_NAME_PATTERN = re.compile(r'<w:name w:val="([^"]+)"')
 _HEADING_NAME_PATTERN = re.compile(r"^heading\s+(\d+)$", re.IGNORECASE)
 _PSTYLE_USE_PATTERN = re.compile(r'<w:pStyle w:val="([^"]+)"')
 _TITLE_STYLE_ID_PATTERN = re.compile(r'<w:t[^>]*>([^<]*)</w:t>')
+
+# Table grid extraction: each <w:tbl> has exactly one <w:tblGrid> direct
+# child (possibly with nested tables further inside). We walk matches in
+# opening-tag order so nested tables appear after their parent's opening
+# but before the parent's tblGrid — good enough for tracking doc order
+# of gridCol blocks.
+_TBL_OPEN_PATTERN = re.compile(r'<w:tbl(?:\s[^>]*)?>|<w:tblGrid(?:\s[^>]*)?>')
+_TBL_GRID_BLOCK_PATTERN = re.compile(
+    r'<w:tblGrid(?:\s[^>]*)?>(.*?)</w:tblGrid>',
+    re.DOTALL,
+)
+_GRID_COL_W_PATTERN = re.compile(r'<w:gridCol\b[^>]*\bw:w="(\d+)"')
+
+
+def _extract_table_grids(doc_xml: str) -> List[List[int]]:
+    """Return tblGrid widths per table in document order.
+
+    We iterate every ``<w:tblGrid>...</w:tblGrid>`` block in source order.
+    python-docx isn't used here to avoid a new dependency; the regex is
+    lenient about attribute ordering and whitespace. Each table in the
+    document has exactly one tblGrid child, so the order of tblGrid
+    blocks in the raw XML matches the order of <w:tbl> opening tags.
+    """
+    grids: List[List[int]] = []
+    for m in _TBL_GRID_BLOCK_PATTERN.finditer(doc_xml):
+        widths = [int(w) for w in _GRID_COL_W_PATTERN.findall(m.group(1))]
+        grids.append(widths)
+    return grids
 
 
 def probe_docx(path: Path) -> DocxProbe:
@@ -135,6 +169,7 @@ def probe_docx(path: Path) -> DocxProbe:
             probe.has_comments = "<w:commentReference" in doc_xml or "<w:comment" in doc_xml
             probe.has_vmerge = "<w:vMerge" in doc_xml
             probe.has_footnotes = "<w:footnoteReference" in doc_xml
+            probe.table_grids = _extract_table_grids(doc_xml)
 
         # --- media files ---
         media = sorted(

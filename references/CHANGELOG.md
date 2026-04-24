@@ -4,6 +4,25 @@
 
 ---
 
+## [0.6.4] — 2026-04-24（HTML 表格列宽保留 docx 原始比例）
+
+### Changed
+
+- **T-22c：HTML fallback 表格的 `<colgroup>` 优先读取 docx `w:tblGrid/w:gridCol` 原始宽度**，严格按 twips 比例换算为百分比注入，不设下限。内容启发式 `_compute_col_widths` 退化为 fallback（仅当 docx 无 tblGrid / 列数对不上时触发）。解决长期痛点：需求表"模块"窄列被启发式错判为 wide 挤占"详情"宽列可读空间。
+- `_clean_html_table(html, tree, docx_widths=None)` 新增参数；`clean_tables` 主循环按 `TABLE_BLOCK_RE` 的遍历顺序维护 `cursor`，与 `probe.table_grids` 一一对应。pipe 表降级路径也会消费 grid 下标以保持表序对齐。
+
+### Added
+
+- **`scripts/tencdoc/probe.py`**：
+  - `DocxProbe.table_grids: List[List[int]]` — 按文档序的每张表的 `<w:gridCol w:w>` twips 列表
+  - `_extract_table_grids(doc_xml)` — 遍历 `<w:tblGrid>...</w:tblGrid>` 块并抽取 gridCol 宽度
+- **`scripts/tencdoc/cleaners/table_cleaner.py`**：
+  - `_docx_widths_to_pct(twips)` — twips → 百分比字符串（保留 2 位小数，末列吸收舍入差）
+  - 报告字段 `widths_from_docx` / `widths_from_heuristic` 统计每种宽度来源命中数
+- **`references/pipeline-internals.md`**：新增「列宽处理规范（T-22c）」章节
+
+---
+
 ## [0.6.3] — 2026-04-19（浏览器扩展：端到端可用）
 
 本次迭代聚焦把 Chrome 扩展 `TencDoc → Obsidian` 从"能装上但点不动"修到"一键触发 → 下载 → Native Host 转换 → 回写按钮状态"全链路可跑通。过程中踩了四个坑，按排查顺序记录。

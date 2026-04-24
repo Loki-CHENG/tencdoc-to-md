@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/banner.jpg" alt="tencdoc-to-md banner" width="100%">
+</p>
+
 # tencdoc-to-md
 
 将**腾讯文档 / 企业微信（WeCom）**导出的 `.docx` 文件，转换为 **Obsidian 兼容的 Markdown**。

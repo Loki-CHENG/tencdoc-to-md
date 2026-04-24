@@ -445,7 +445,7 @@
         try {
           await navigator.clipboard.writeText(lastMdPath);
           const prev = btn.textContent;
-          btn.textContent = '📋 路径已复制';
+          btn.textContent = '路径已复制';
           setTimeout(() => { btn.textContent = prev; }, 1200);
         } catch (err) { console.warn('复制失败', err); }
         return;
@@ -491,7 +491,7 @@
       try {
         await navigator.clipboard.writeText(lastMdPath);
         const prev = btn.textContent;
-        btn.textContent = '📋 已复制';
+        btn.textContent = '已复制';
         setTimeout(() => { btn.textContent = prev; }, 1200);
       } catch (err) { console.warn('复制失败', err); }
     });
@@ -504,7 +504,7 @@
         btn.disabled = false;
         btn.dataset.status = 'done';
         lastMdPath = msg.md_path || '';
-        btn.textContent = lastMdPath ? '✅ 已转换 · 点此复制路径' : '✅ 已转换';
+        btn.textContent = lastMdPath ? '已转换 · 点此复制路径' : '已转换';
         if (lastMdPath) {
           btn.title = '已保存到：\n' + lastMdPath + '\n\n左键或右键 = 复制路径';
           LOG('✅ md_path:', lastMdPath);

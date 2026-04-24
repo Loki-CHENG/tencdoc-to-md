@@ -99,6 +99,22 @@ pandoc 展开 `colspan=N` header 时，生成 1 个填充格 + (N-1) 个空格�
 4. `<li>\s*<p>(...)` **非贪婪、不越过第一个 `</p>`**：去除 `<li><p>` 的段落包裹，消除 Obsidian 阅读视图的行间距问题
 5. `_WIKILINK_IMG_RE.sub(_wikilink_to_img)`：`![[path]]` → `<img src="path">`（Obsidian 不在 HTML block 中渲染 wiki-link）
 
+### 列宽处理规范（T-22c：docx 原始比例优先）
+
+HTML fallback 表格注入 `<colgroup>` 时的优先级：
+
+| 优先级 | 来源 | 触发条件 |
+|---|---|---|
+| 1 | docx `w:tblGrid/w:gridCol@w:w` → twips 按比例换算为百分比（严格保留原比例，无下限） | `probe.table_grids[i]` 存在且列数 == `tree.max_cols()` |
+| 2 | 内容启发式 `_compute_col_widths`（narrow 10% / image 25% / wide 平分剩余） | 1 不满足（无 tblGrid、列数不符、嵌套表对不上等） |
+| 3 | 不注入 `<colgroup>`，交给 `table-layout:fixed` 平分 | 启发式也返回空（单列 / 所有列同类型） |
+
+**表序匹配**：`clean_tables` 按 `TABLE_BLOCK_RE` 在 pandoc 输出中遍历的顺序维护 `cursor`，与 `probe.table_grids` 的文档序一一对应。pipe 表降级路径也会消费一个 grid 下标以保持对齐。
+
+**百分比算法**：`_docx_widths_to_pct(twips)` 过滤非正值，按 `pct[i] = w[i] / sum(w) * 100` 保留 2 位小数，末列吸收舍入差使总和严格为 100%。
+
+**统计字段**（见 `report.table_cleaner`）：`widths_from_docx` / `widths_from_heuristic` 反映每种来源命中的 HTML 表数量，便于回归监控。
+
 ### `_fix_gfm_empty_header()` 逻辑
 
 pandoc 对无 header 表补充全空首行。此函数检测 GFM pipe 表的首行是否全部为空白单元格，若是则丢弃首行并将下一行提升为 header。
@@ -117,6 +133,7 @@ pandoc 对无 header 表补充全空首行。此函数检测 GFM pipe 表的首�
 | `image_files` | `word/media/` 目录列表 |
 | `is_tencent_doc` | `len(rand_style_ids) >= 2 AND name_has_lower_heading` |
 | `has_vmerge` | `<w:vMerge>` 元素存在 |
+| `table_grids` | 按文档序遍历 `<w:tblGrid>` 块抓取每个 `<w:gridCol w:w="N"/>` 的 twips；嵌套表也计入 |
 
 **腾讯文档指纹**：styles.xml 中 `w:styleId` 为 6 位随机字符（如 `rdbvau`）但 `w:name` 保留标准名（`heading 2`）。
 
