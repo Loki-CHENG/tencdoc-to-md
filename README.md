@@ -69,6 +69,19 @@ python3 batch.py
 | 标题层级 | 智能归一化 | 保持原样 |
 | 表格处理 | 智能降级 + 列宽分配 | 保持 HTML |
 
+### 核心技术差异（深度）
+
+以下是与通用 docx-to-md 在**技术实现层面**的本质差异：
+
+| # | 亮点 | 本 skill 做了什么 | 通用工具的问题 |
+|---|------|-------------------|----------------|
+| 1 | **真实鼠标模拟** | Chrome 扩展通过 `chrome.debugger` + CDP 发送真实鼠标事件，绕过 React `isTrusted` 和 CSS `:hover` 限制，自动触发腾讯文档的导出菜单 | 常规扩展用 DOM API `dispatchEvent`，面对现代 React 组件库子菜单直接不渲染 |
+| 2 | **表格原始比例还原** | 直接从 docx XML 提取 `w:tblGrid` 列宽 twips，按原始比例注入 `<colgroup>`，保留原文档排版 | pandoc 输出无列宽信息，Obsidian 中所有列被浏览器均分，排版失真 |
+| 3 | **下划线/高亮/颜色恢复** | 在 docx XML 中注入 PUA sentinel 字符，让 pandoc 透传后还原为 `<u>` / `<span style="background-color">` / `<span style="color">` | pandoc 直接丢弃这些格式，通用工具完全丢失 |
+| 4 | **腾讯文档指纹识别** | 解析 docx ZIP 内 XML，识别 styles.xml 中 6 位随机 styleId 等腾讯文档特有指纹，自动区分来源 | 无来源识别，通用 Word 和腾讯文档一视同仁，导致特有格式处理错误 |
+| 5 | **一键导出流水线** | Chrome 扩展 + Native Messaging：页面点按钮 → 自动导出 docx → 下载 → 本地 Python 转换 → 按钮状态回调，全程无需手动操作 | 手动下载 → 手动拖文件 → 手动运行脚本，三步分离 |
+| 6 | **标题层级智能归一** | 解包 list-wrapped heading、剥离 numPr 列表缩进、H2 为最高级自动归一化 | pandoc 常将深层标题误渲染为加粗列表项，需人工修复层级 |
+
 ---
 
 ## 前置依赖
