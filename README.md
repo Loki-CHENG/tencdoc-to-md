@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/banner.jpg" alt="tencdoc-to-md banner" width="100%">
+</p>
+
 # tencdoc-to-md
 
 将**腾讯文档 / 企业微信（WeCom）**导出的 `.docx` 文件，转换为 **Obsidian 兼容的 Markdown**。
@@ -35,6 +39,7 @@ python3 batch.py
 - [安装方式](#安装方式)
 - [首次配置](#首次配置)
 - [日常使用](#日常使用)
+- [Chrome 扩展（一键导出+转换）](#chrome-扩展一键导出转换)
 - [Obsidian 附件设置](#obsidian-附件设置)
 - [更新方式](#更新方式)
 - [部署验证 Checklist](#部署验证-checklist)
@@ -63,6 +68,19 @@ python3 batch.py
 | 下划线 / 高亮 | 自动恢复 | 可能丢失 |
 | 标题层级 | 智能归一化 | 保持原样 |
 | 表格处理 | 智能降级 + 列宽分配 | 保持 HTML |
+
+### 核心技术差异（深度）
+
+以下是与通用 docx-to-md 在**技术实现层面**的本质差异：
+
+| # | 亮点 | 本 skill 做了什么 | 通用工具的问题 |
+|---|------|-------------------|----------------|
+| 1 | **真实鼠标模拟** | Chrome 扩展通过 `chrome.debugger` + CDP 发送真实鼠标事件，绕过 React `isTrusted` 和 CSS `:hover` 限制，自动触发腾讯文档的导出菜单 | 常规扩展用 DOM API `dispatchEvent`，面对现代 React 组件库子菜单直接不渲染 |
+| 2 | **表格原始比例还原** | 直接从 docx XML 提取 `w:tblGrid` 列宽 twips，按原始比例注入 `<colgroup>`，保留原文档排版 | pandoc 输出无列宽信息，Obsidian 中所有列被浏览器均分，排版失真 |
+| 3 | **下划线/高亮/颜色恢复** | 在 docx XML 中注入 PUA sentinel 字符，让 pandoc 透传后还原为 `<u>` / `<span style="background-color">` / `<span style="color">` | pandoc 直接丢弃这些格式，通用工具完全丢失 |
+| 4 | **腾讯文档指纹识别** | 解析 docx ZIP 内 XML，识别 styles.xml 中 6 位随机 styleId 等腾讯文档特有指纹，自动区分来源 | 无来源识别，通用 Word 和腾讯文档一视同仁，导致特有格式处理错误 |
+| 5 | **一键导出流水线** | Chrome 扩展 + Native Messaging：页面点按钮 → 自动导出 docx → 下载 → 本地 Python 转换 → 按钮状态回调，全程无需手动操作 | 手动下载 → 手动拖文件 → 手动运行脚本，三步分离 |
+| 6 | **标题层级智能归一** | 解包 list-wrapped heading、剥离 numPr 列表缩进、H2 为最高级自动归一化 | pandoc 常将深层标题误渲染为加粗列表项，需人工修复层级 |
 
 ---
 
@@ -262,6 +280,97 @@ tencdoc ~/Downloads/某PRD.docx
 - `📋 已读取配置`：说明 config.yaml 生效了（没有这行 = pyyaml 未安装）
 - `⚠️ 警告`：需要人工处理的内容
 - `💡 提醒`：使用全局附件库时需要配置 Obsidian
+
+---
+
+## Chrome 扩展（一键导出+转换）
+
+不用手动点「菜单 → 导出为 → 本地 Word 文档」，也不用把 docx 拖来拖去。
+装上 `extension/` 这个 Chrome 扩展后，在腾讯文档/企业微信文档页面右下角会出现一个
+紫色浮动按钮 **「→ Obsidian」**，一键完成：
+
+```
+页面点击按钮
+  → 扩展模拟点击官方「菜单 → 导出为 → 本地 Word 文档(.docx)」
+  → docx 下载到 Vault 内的 inbox 子目录
+  → 通过 Native Messaging 通知本地 Python helper
+  → helper 调 convert.py 生成 Obsidian Markdown（图片抽取到附件目录）
+  → 按钮变绿：✅ 已转换
+```
+
+### 演示
+
+![一键导出演示](docs/demo.gif)
+
+### 架构
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  Chrome                                                        │
+│  ┌──────────────┐  sendNativeMessage   ┌────────────────────┐  │
+│  │  扩展         │ ───────────────────▶ │ native-host/host.py │  │
+│  │ (MV3)        │ ◀─────────────────── │  (Python)          │  │
+│  └──────┬───────┘      JSON+4字节前缀  └──────────┬─────────┘  │
+│         │                                          │            │
+│  content.js                                        ▼            │
+│  - 注入 "→ Obsidian" 按钮                   subprocess        │
+│  - 模拟点击导出菜单                        调用 convert.py      │
+│                                                                │
+│  background.js                                                 │
+│  - 监听 downloads.onChanged                                    │
+│  - 把下载好的 docx 路径发给 helper                              │
+└────────────────────────────────────────────────────────────────┘
+```
+
+扩展**完全复用你日常 Chrome 的登录态**——只要你能打开这个文档，扩展就能帮你导出。
+如果某篇文档被管理员禁用了导出，扩展会直接提示失败，不做"绕过导出"的兜底
+（出于数据安全考虑，无导出权限的文档本来就不该进你的笔记库）。
+
+### 安装
+
+```bash
+# 在仓库根目录运行
+./install.sh
+```
+
+脚本会：
+1. 检查 `python3` 和 `pandoc`
+2. 生成 `native-host/host-launcher.sh`
+3. 提示你在 `chrome://extensions` 加载 `extension/` 目录并复制扩展 ID
+4. 把 Native Messaging host manifest 写到 Chrome / Edge / Brave / Arc 各自的目录
+5. 初始化 `~/.config/tencdoc-to-md/config.yaml`，记录本仓库路径
+
+装完后：
+1. 点击浏览器工具栏的扩展图标 → **打开设置**
+2. 填写 Vault 根目录（绝对路径）、inbox/output/attachments 子路径
+3. 访问 `https://doc.weixin.qq.com/` 打开任意有导出权限的文档 → 按右下角按钮
+
+### 卸载
+
+```bash
+./install.sh --uninstall
+```
+
+会删除所有浏览器的 host manifest；用户 `~/.config/tencdoc-to-md/config.yaml` 保留。
+
+### 调试技巧
+
+- 扩展状态：点扩展图标弹出的 popup 里会显示 Native host 版本和当前配置
+- 扩展日志：在任意腾讯文档页面按 `F12` → Console，关键字 `[TencDoc→MD]`
+- background 日志：`chrome://extensions` → 目标扩展 → 「检查视图」service worker
+- Native host 日志：host 崩溃时错误会通过消息回传到扩展；手动测试可以：
+
+  ```bash
+  printf '\x10\x00\x00\x00{"cmd":"ping"}' | python3 native-host/host.py | xxd
+  ```
+
+  （`\x10\x00\x00\x00` 是 16 字节小端长度前缀；会看到 `{"ok": true, ...}` 响应）
+
+### 和批量脚本的关系
+
+- 扩展/helper 和现有的 `batch.py` **共用同一份** `~/.config/tencdoc-to-md/config.yaml`
+- 扩展「一次一篇」，批量 `python3 batch.py` 还是「一次一批」
+- 两种方式互不干扰；你可以只用扩展，也可以混着用
 
 ---
 

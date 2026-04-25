@@ -4,6 +4,117 @@
 
 ---
 
+## [0.6.6] — 2026-04-25（部署/转换质量反馈修复）
+
+### Fixed
+
+- **install.sh：Bash 3.2 全角括号崩溃**（developer-feedback §2）。macOS 自带 Bash 3.2 解析 `"$var（"` 会把全角左括号字节并进变量名，触发 `unbound variable` 退出。第 143 行 `用户配置：$user_cfg（repo_dir = $REPO_DIR）` 改为半角括号 `用户配置: $user_cfg (repo_dir = $REPO_DIR)`；脚本顶部新增 `${BASH_VERSINFO[0]}<4` 警告，提示用户 `brew install bash`。
+- **native-host/host.py：扩展配置路径转义字符导致幽灵目录**（developer-feedback §3，P0）。极简 `_yaml_load` 不还原 `\ ` / `\~`，导致 iCloud 路径含字面反斜杠时被 `Path()` 当作单独目录名，文件被写到「丢失」位置。
+  - 新增 `normalize_path_input(value)`：剥 `\<space>` → 空格、`\~` → `~`、首尾引号/空白
+  - `_PATH_KEYS = {"vault","output_dir","attachments_dir","repo_dir","inbox"}` 在 `_yaml_load` 与 `cmd_set_config` 双向应用归一化
+  - `cmd_set_config` 新增校验 → 返回 `warnings`：vault 不是绝对路径 / 目录不存在 / output_dir 以 vault 末段开头（重复嵌套）/ 检测到 shell 转义已剥除
+
+### Added
+
+- **front_matter：`source` 字段自动填充**（developer-feedback §4.3）。若 `hyperlink_cleaner` 收集到至少一个腾讯文档链接，取首个填入 `source:`；候选链接仍以 YAML 注释保留并附「请人工确认是否本文档自身」提示。报告中新增 `front_matter.source` / `front_matter.source_auto_filled`。
+- **table_cleaner：HTML 标签泄漏检测（T-24）**（developer-feedback §4.1）。在 `clean_tables` 末端扫描所有「未被 `<table>...</table>` 包裹」的孤立 `<tr>/<td>/</tr>/</td>/<tbody>` 等行，写入 `report.table_cleaner.tag_leaks` 数量与最多 5 个样本，并 `ctx.warn(...)` 让用户在转换报告中收到提醒。SOP 实测产生 18 处泄漏（与 feedback §4.1 描述一致），证明检测命中。
+
+### Verification
+
+- `python3 -m py_compile`：3 个修改的 Python 文件全部通过
+- `bash -n install.sh`：通过
+- `normalize_path_input` 单测：`"/Users/.../Mobile\ Documents/com\~apple\~CloudDocs"` → `"/Users/.../Mobile Documents/com~apple~CloudDocs"` ✓
+- 端到端：会员购 SOP docx 转换 → `source` 已自动填充、warnings 数组报告 18 处 tag_leak、front_matter 渲染正确
+
+---
+
+## [0.6.5] — 2026-04-25（HTML 表格紧凑行间距）
+
+### Changed
+
+- **T-23：HTML fallback 表格作用域内重写垂直留白策略**，目标是让单元格内嵌套列表的视觉密度接近 Obsidian 纯 markdown 列表。在 `_clean_html_table` 内按顺序新增 6 步：
+  1. `</p>\s*<p>` → `<br>` 保留段落视觉换行
+  2. 剥光剩余 `<p>/</p>` 标签（消除 1em 段落 margin）
+  3. `<ul>/<ol>` 注入 `style="margin:0.2em 0;padding-left:1.4em"`
+  4. `<li>` 注入 `style="margin:0;padding:0"`
+  5. `<blockquote>` 注入 `style="margin:0.2em 0;padding-left:0.8em;border-left:2px solid #ddd"`
+  6. `<td>/<th>` 现有 word-break style 追加 `padding:4px 8px;line-height:1.5;vertical-align:top`
+- 老规则 T-05/T-07/T-07b 因步骤 2 变为冗余但暂保留，待 v0.7.0 整理。
+- 步骤 3-5 用 `(?![^>]*style=)` negative lookahead 避免覆盖嵌套表内联样式。
+
+### Verification
+
+- 4 文档回归：列宽 `widths_from_docx` 数据完全稳定（带货佣金结算 9/9、PRD 2/3、会员购 1、小店 N/A），证明本轮改动正交于 T-22c。
+- PRD 那张 5-6 层嵌套 ul 表的渲染密度由「每 li 上下 ~16-32px gap」降到「~2-4px」。
+
+---
+
+## [0.6.4] — 2026-04-24（HTML 表格列宽保留 docx 原始比例）
+
+### Changed
+
+- **T-22c：HTML fallback 表格的 `<colgroup>` 优先读取 docx `w:tblGrid/w:gridCol` 原始宽度**，严格按 twips 比例换算为百分比注入，不设下限。内容启发式 `_compute_col_widths` 退化为 fallback（仅当 docx 无 tblGrid / 列数对不上时触发）。解决长期痛点：需求表"模块"窄列被启发式错判为 wide 挤占"详情"宽列可读空间。
+- `_clean_html_table(html, tree, docx_widths=None)` 新增参数；`clean_tables` 主循环按 `TABLE_BLOCK_RE` 的遍历顺序维护 `cursor`，与 `probe.table_grids` 一一对应。pipe 表降级路径也会消费 grid 下标以保持表序对齐。
+
+### Added
+
+- **`scripts/tencdoc/probe.py`**：
+  - `DocxProbe.table_grids: List[List[int]]` — 按文档序的每张表的 `<w:gridCol w:w>` twips 列表
+  - `_extract_table_grids(doc_xml)` — 遍历 `<w:tblGrid>...</w:tblGrid>` 块并抽取 gridCol 宽度
+- **`scripts/tencdoc/cleaners/table_cleaner.py`**：
+  - `_docx_widths_to_pct(twips)` — twips → 百分比字符串（保留 2 位小数，末列吸收舍入差）
+  - 报告字段 `widths_from_docx` / `widths_from_heuristic` 统计每种宽度来源命中数
+- **`references/pipeline-internals.md`**：新增「列宽处理规范（T-22c）」章节
+
+---
+
+## [0.6.3] — 2026-04-19（浏览器扩展：端到端可用）
+
+本次迭代聚焦把 Chrome 扩展 `TencDoc → Obsidian` 从"能装上但点不动"修到"一键触发 → 下载 → Native Host 转换 → 回写按钮状态"全链路可跑通。过程中踩了四个坑，按排查顺序记录。
+
+### Fixed
+
+- **E-01：`findMenuButton` 找不到"文件操作"按钮** — 腾讯文档新版 DOM 里真正的触发器是 `#main-menu-file`（`aria-haspopup="true"`，`div` 元素），`#headerbar-filemenu` 退化成外层容器。`content.js` 重写 `findMenuButton()`：优先 `#main-menu-file`，回退到 `#headerbar-filemenu`、`[class*="menu-button-file"]`、aria-label 文本匹配；`waitForMenuButton(timeout=8000)` 给慢加载页面宽限窗口。
+
+- **E-02：content-script 不在编辑器 frame 里执行** — 腾讯文档把编辑器渲染在 `<iframe id="very_fast_inner">` 内，顶层 frame 里根本没有菜单 DOM。诊断时所有选择器都返回空／false 就是这个原因。修复：`manifest.json` 加 `"all_frames": true` 让内容脚本注入所有 frame；`content.js` 新增 `isEditorFrame()` + `waitForEditorFrame(15000)`，只在能找到编辑器 DOM 的 frame 里注入浮动按钮，顶层 frame 跳过，避免按钮重影。
+
+- **E-03：合成事件过不了 Dui（React）组件的 isTrusted + `:hover` 检查** — `dispatchEvent` 的 `MouseEvent` 只能模拟"假鼠标"，Dui 菜单的二级子菜单（`.mainmenu-item-export-as-docx`）是 lazy-mount：必须真鼠标 hover 过"导出为"之后 React 状态才挂载子菜单 DOM。修复：`background.js` 用 `chrome.debugger` attach + CDP `Input.dispatchMouseEvent` 发真实鼠标事件（`mouseMoved` / `mousePressed` / `mouseReleased`），走浏览器原生输入管线，isTrusted=true，CSS `:hover` 也生效。`manifest.json` 加 `"debugger"` 权限。
+
+- **E-04：keepAlive 循环重复 attach/detach 自撞（"already attached" / "无法启动 debugger"）** — 为了防止 DOM 查找空档里 Dui 收起子菜单，content.js 有个 200ms 的 keepAlive 循环持续给"导出为"发真鼠 move 维持 hover。最初每次循环都 attach+detach，导致上一次 detach 还没跑完下一次 attach 就被拒。引入 **session 协议**：`sendRealMouse(steps, session)` 的 `session` 取 `'begin'` / `'continue'` / `'end'`，整个导出会话只 attach 一次、keepAlive 循环都用 `'continue'` 复用连接、最终点 docx 用 `'end'` 统一 detach。`background.js` 用 `attachedTabs` Set 做状态机，监听 `chrome.debugger.onDetach` 清理登记（用户手动关 DevTools / tab 关闭的场景）。
+
+- **E-05：Step 6 最后一次 CDP 调用跟 keepAlive 循环抢连接** — 之前的顺序是"先点 docx → 再停 keepAlive"，最后一次 `action='click'`（session='end' 会 detach）跟循环里飞行中的 `action='move'`（session='continue'）竞争。改为**先 `keepAlive=false; await keepAliveLoop;`，确认循环退出后再发 `'end'` 的 click**。同时 Step 5 的 catch 也改为 async，抛错前 `await keepAliveLoop` 让循环落地，外层 catch 再 `forceDetachMouse()` 清理。
+
+### Added
+
+- **`extension/background.js`**：
+  - `attachedTabs` Set + `_attachIfNeeded` / `_detachIfAttached` 幂等 helper（`"already attached"` 归一化处理，补登记）
+  - `realMouseExport(tabId, steps, session)` session 协议：`'begin'`/`'continue'`/`'end'`/`'legacy'` 四种模式
+  - `chrome.debugger.onDetach` 监听器：外部原因（DevTools 关闭 / tab 关闭）detach 时同步清理 `attachedTabs`
+  - `real_mouse_detach` 消息处理：content.js 失败路径调用的强制清理接口 `forceDetachTab(tabId)`
+  - 下载匹配从单变量 `pendingExport` 改为 FIFO `pendingQueue`：支持用户快速连续点或多 tab 并行导出
+  - `reapExpiredPending()`：30s 窗口外的 pending 过期清理
+
+- **`extension/content.js`**：
+  - `isEditorFrame()` / `waitForEditorFrame()` iframe 选择逻辑，MutationObserver + 轮询双保险
+  - `sendRealMouse(steps, session)` 改签名支持 session；新增 `forceDetachMouse()` 供失败恢复
+  - keepAlive 循环：每 200ms 真鼠 move 到"导出为"中心 + `hover()` 合成事件 + `classList.add('dui-menu-submenu-visible')` 三重保险
+  - 按钮 `data-status` 状态机：`idle` / `working` / `waiting` / `done` / `error`；done 状态下左键 = 复制 md_path，右键任意状态 = 复制最近路径；模块级 `lastMdPath` 跨次持久
+  - CDP 冲突时的诊断错误文案（提示关 DevTools 或其他扩展）
+
+- **`extension/manifest.json`**：`"debugger"` 权限、`"all_frames": true`、`host_permissions` 加 `docs.qq.com/*`
+
+### Changed
+
+- `manifest.json` version → 0.6.3
+- `sendRealMouse` 默认行为保持兼容：未传 session 时走 legacy 模式（每次 attach+detach），与旧调用点兼容
+
+### Known Issues / Debt
+
+- 如果用户在导出途中打开 DevTools，`chrome.debugger` 会被 DevTools 抢走（`Another debugger is already attached`），扩展无法恢复。目前错误文案已提示，但没有自动 fallback。
+- Dui 的 `keepAlive` 循环频率（200ms）是经验值，更慢的机器可能需要调。
+
+---
+
 ## [0.5.0] — 2026-04-13
 
 ### Added

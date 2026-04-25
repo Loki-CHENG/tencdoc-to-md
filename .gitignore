@@ -29,3 +29,7 @@ tests/output/
 # 临时文件
 *.tmp
 tencdoc_*/
+
+# 扩展/Native Messaging：launcher 由 install.sh 生成，不进 git
+native-host/host-launcher.sh
+

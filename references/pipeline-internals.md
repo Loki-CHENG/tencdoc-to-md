@@ -99,6 +99,37 @@ pandoc 展开 `colspan=N` header 时，生成 1 个填充格 + (N-1) 个空格�
 4. `<li>\s*<p>(...)` **非贪婪、不越过第一个 `</p>`**：去除 `<li><p>` 的段落包裹，消除 Obsidian 阅读视图的行间距问题
 5. `_WIKILINK_IMG_RE.sub(_wikilink_to_img)`：`![[path]]` → `<img src="path">`（Obsidian 不在 HTML block 中渲染 wiki-link）
 
+### 紧凑行间距（T-23）
+
+`_clean_html_table` 在剥 tbody/style 之后、注入 colgroup 之前对表格 HTML 块按以下顺序压缩垂直留白（作用域**仅限当前表格 HTML 字符串**，不污染其他正文）：
+
+| 步骤 | 处理 | 目的 |
+|---|---|---|
+| 1 | `</p>\s*<p>` → `<br>` | 段落分隔保留为视觉换行，避免 margin 叠加 |
+| 2 | 剥光 `<p>/</p>` | 消除 1em 上下 margin（`<p>` 的最大留白源） |
+| 3 | `<ul>/<ol>` 注入 `style="margin:0.2em 0;padding-left:1.4em"` | 覆盖 Obsidian 默认 1em margin |
+| 4 | `<li>` 注入 `style="margin:0;padding:0"` | 消除 list item 间垂直 gap |
+| 5 | `<blockquote>` 注入 `style="margin:0.2em 0;padding-left:0.8em;border-left:2px solid #ddd"` | 保留缩进语义但去 1em margin |
+| 6 | `<td>/<th>` style 链追加 `padding:4px 8px;line-height:1.5;vertical-align:top` | 行高一致、顶对齐（避免邻列换行时窄列文字"悬浮"中部） |
+
+步骤 3-5 用 `(?![^>]*style=)` negative lookahead 跳过已带内联样式的标签（保护嵌套表内容）。步骤 1+2 让旧规则 T-05/T-07/T-07b 成为冗余，但保留不删以备回滚。
+
+### 列宽处理规范（T-22c：docx 原始比例优先）
+
+HTML fallback 表格注入 `<colgroup>` 时的优先级：
+
+| 优先级 | 来源 | 触发条件 |
+|---|---|---|
+| 1 | docx `w:tblGrid/w:gridCol@w:w` → twips 按比例换算为百分比（严格保留原比例，无下限） | `probe.table_grids[i]` 存在且列数 == `tree.max_cols()` |
+| 2 | 内容启发式 `_compute_col_widths`（narrow 10% / image 25% / wide 平分剩余） | 1 不满足（无 tblGrid、列数不符、嵌套表对不上等） |
+| 3 | 不注入 `<colgroup>`，交给 `table-layout:fixed` 平分 | 启发式也返回空（单列 / 所有列同类型） |
+
+**表序匹配**：`clean_tables` 按 `TABLE_BLOCK_RE` 在 pandoc 输出中遍历的顺序维护 `cursor`，与 `probe.table_grids` 的文档序一一对应。pipe 表降级路径也会消费一个 grid 下标以保持对齐。
+
+**百分比算法**：`_docx_widths_to_pct(twips)` 过滤非正值，按 `pct[i] = w[i] / sum(w) * 100` 保留 2 位小数，末列吸收舍入差使总和严格为 100%。
+
+**统计字段**（见 `report.table_cleaner`）：`widths_from_docx` / `widths_from_heuristic` 反映每种来源命中的 HTML 表数量，便于回归监控。
+
 ### `_fix_gfm_empty_header()` 逻辑
 
 pandoc 对无 header 表补充全空首行。此函数检测 GFM pipe 表的首行是否全部为空白单元格，若是则丢弃首行并将下一行提升为 header。
@@ -117,6 +148,7 @@ pandoc 对无 header 表补充全空首行。此函数检测 GFM pipe 表的首�
 | `image_files` | `word/media/` 目录列表 |
 | `is_tencent_doc` | `len(rand_style_ids) >= 2 AND name_has_lower_heading` |
 | `has_vmerge` | `<w:vMerge>` 元素存在 |
+| `table_grids` | 按文档序遍历 `<w:tblGrid>` 块抓取每个 `<w:gridCol w:w="N"/>` 的 twips；嵌套表也计入 |
 
 **腾讯文档指纹**：styles.xml 中 `w:styleId` 为 6 位随机字符（如 `rdbvau`）但 `w:name` 保留标准名（`heading 2`）。
 

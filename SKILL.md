@@ -8,6 +8,10 @@ description: >
   或文件名含 PRD / 需求等业务词且来源为 doc.weixin.qq.com；通用 docx 请用 docx-to-md。
   v0.4.x 新增：文字颜色恢复（<span style="color">）、幽灵空表清除、图片宽度约束。
   v0.5.0 新增：config.yaml 路径配置、全局附件库模式、batch.py 批量入口、根目录快捷脚本。
+  v0.6.4 新增：HTML 表格 <colgroup> 按 docx w:tblGrid 原始比例注入列宽（内容启发式降为 fallback）。
+  v0.6.5 新增：HTML 表格作用域内剥 <p>、注入 ul/li/blockquote/td 紧凑内联样式，消除 Obsidian 嵌套列表巨幅留白。
+  v0.6.6 修复：install.sh Bash 3.2 全角括号崩溃；host.py 配置路径 shell 转义归一化（消灭幽灵目录）；
+  source 字段自动取首个腾讯文档候选链接；HTML 表格泄漏标签检测（warning + 报告样本）。
 license: MIT
 compatibility: >
   Python 3.8+，pandoc 2.9+（brew install pandoc / apt install pandoc），pyyaml>=5.1
