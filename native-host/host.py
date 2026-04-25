@@ -58,8 +58,36 @@ def send_message(msg: dict) -> None:
 # ───────────────────────────────────────────────────────────────────────────
 #  Config
 # ───────────────────────────────────────────────────────────────────────────
+# 视为「路径」的配置 key：保存/读取时都要做归一化（去 shell 转义）
+_PATH_KEYS = {"vault", "output_dir", "attachments_dir", "repo_dir", "inbox"}
+
+
+def normalize_path_input(value: str) -> str:
+    """处理用户从终端复制来的带 shell 转义的路径。
+
+    场景：用户在终端 `cd` 到 iCloud 目录，shell 把空格/`~` 转义成 `\\ ` / `\\~`，
+    复制粘贴到扩展 options 页面后，原样进入 config.yaml。极简 YAML 解析器
+    不会还原这些转义，导致后续 `os.path.expanduser` 把 `\\` 当作字面字符，
+    创建出"幽灵目录"。
+
+    本函数把：
+        \\<space>  →  <space>
+        \\~        →  ~
+    并去掉首尾空白与残留引号。
+    """
+    if not value:
+        return value
+    s = str(value)
+    # 处理常见 shell 转义。注意先处理 `\~` 再处理 `\ `，避免顺序敏感。
+    s = s.replace("\\~", "~").replace("\\ ", " ")
+    return s.strip().strip('"').strip("'")
+
+
 def _yaml_load(text: str) -> dict:
-    """极简 YAML 读取（只支持 key: value，避免强依赖 pyyaml）。"""
+    """极简 YAML 读取（只支持 key: value，避免强依赖 pyyaml）。
+
+    对路径类字段额外做 shell 转义归一化，防止 `\\ ` / `\\~` 进入 Path()。
+    """
     result = {}
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].rstrip()
@@ -68,6 +96,8 @@ def _yaml_load(text: str) -> dict:
         k, _, v = line.partition(":")
         k = k.strip()
         v = v.strip().strip('"').strip("'")
+        if k in _PATH_KEYS:
+            v = normalize_path_input(v)
         result[k] = v
     return result
 
@@ -220,11 +250,41 @@ def cmd_get_config(_msg: dict) -> dict:
 
 def cmd_set_config(msg: dict) -> dict:
     cfg = load_config()
+    warnings: list[str] = []
     for key in ("vault", "inbox", "output_dir", "attachments_dir"):
-        if key in msg:
-            cfg[key] = msg[key]
+        if key not in msg:
+            continue
+        raw = msg[key]
+        cleaned = normalize_path_input(raw) if key in _PATH_KEYS else raw
+        # 提示用户：检测到了 shell 转义，已自动剥除
+        if isinstance(raw, str) and ("\\ " in raw or "\\~" in raw):
+            warnings.append(
+                f"{key}: 检测到 shell 转义字符（\\空格 或 \\~），已自动归一化为 “{cleaned}”"
+            )
+        # vault 必须是绝对路径且实际存在；否则给个清晰提示而不是默默写入
+        if key == "vault" and cleaned:
+            expanded = os.path.expanduser(cleaned)
+            if not os.path.isabs(expanded):
+                warnings.append(f"vault 不是绝对路径：{cleaned}")
+            elif not os.path.isdir(expanded):
+                warnings.append(f"vault 目录不存在：{expanded}")
+        # output_dir / attachments_dir 一般是相对 vault 的子路径；
+        # 若以 vault 末段开头，提示重复嵌套（feedback §3.2 第四层）
+        if key in ("output_dir", "attachments_dir") and cleaned:
+            vault_val = normalize_path_input(msg.get("vault", cfg.get("vault", "")))
+            if vault_val:
+                vault_basename = os.path.basename(os.path.normpath(os.path.expanduser(vault_val)))
+                if vault_basename and cleaned.split("/", 1)[0] == vault_basename:
+                    warnings.append(
+                        f"{key}: '{cleaned}' 以 vault 末段 '{vault_basename}' 开头，"
+                        f"可能导致路径重复嵌套；{key} 应该是相对 vault 的子路径。"
+                    )
+        cfg[key] = cleaned
     path = save_config(cfg)
-    return {"ok": True, "cmd": "set_config", "path": str(path)}
+    resp: dict = {"ok": True, "cmd": "set_config", "path": str(path)}
+    if warnings:
+        resp["warnings"] = warnings
+    return resp
 
 
 def cmd_convert(msg: dict) -> dict:

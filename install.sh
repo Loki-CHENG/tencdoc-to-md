@@ -15,6 +15,12 @@
 
 set -euo pipefail
 
+# Bash 3.2（macOS 自带）对中文全角字符 + `$var` 紧邻解析存在 bug，
+# 容易触发 "unbound variable"。提示用户升级。
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+  printf "\033[33m!\033[0m 检测到 Bash %s（macOS 默认 3.2）；如遇 'unbound variable' 之类错误，请运行 'brew install bash' 后用新版 bash 重跑。\n" "${BASH_VERSION:-unknown}"
+fi
+
 HOST_NAME="com.loki.tencdoc_to_md"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOST_SCRIPT="${REPO_DIR}/native-host/host.py"
@@ -140,7 +146,8 @@ output_dir: TencDocs
 attachments_dir: ""
 EOF
   fi
-  ok "用户配置：$user_cfg（repo_dir = $REPO_DIR）"
+  # 注意：Bash 3.2 对中文全角括号 + $var 紧邻解析有 bug，这里用半角括号
+  ok "用户配置: $user_cfg (repo_dir = $REPO_DIR)"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

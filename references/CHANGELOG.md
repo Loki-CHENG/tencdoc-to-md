@@ -4,6 +4,51 @@
 
 ---
 
+## [0.6.6] — 2026-04-25（部署/转换质量反馈修复）
+
+### Fixed
+
+- **install.sh：Bash 3.2 全角括号崩溃**（developer-feedback §2）。macOS 自带 Bash 3.2 解析 `"$var（"` 会把全角左括号字节并进变量名，触发 `unbound variable` 退出。第 143 行 `用户配置：$user_cfg（repo_dir = $REPO_DIR）` 改为半角括号 `用户配置: $user_cfg (repo_dir = $REPO_DIR)`；脚本顶部新增 `${BASH_VERSINFO[0]}<4` 警告，提示用户 `brew install bash`。
+- **native-host/host.py：扩展配置路径转义字符导致幽灵目录**（developer-feedback §3，P0）。极简 `_yaml_load` 不还原 `\ ` / `\~`，导致 iCloud 路径含字面反斜杠时被 `Path()` 当作单独目录名，文件被写到「丢失」位置。
+  - 新增 `normalize_path_input(value)`：剥 `\<space>` → 空格、`\~` → `~`、首尾引号/空白
+  - `_PATH_KEYS = {"vault","output_dir","attachments_dir","repo_dir","inbox"}` 在 `_yaml_load` 与 `cmd_set_config` 双向应用归一化
+  - `cmd_set_config` 新增校验 → 返回 `warnings`：vault 不是绝对路径 / 目录不存在 / output_dir 以 vault 末段开头（重复嵌套）/ 检测到 shell 转义已剥除
+
+### Added
+
+- **front_matter：`source` 字段自动填充**（developer-feedback §4.3）。若 `hyperlink_cleaner` 收集到至少一个腾讯文档链接，取首个填入 `source:`；候选链接仍以 YAML 注释保留并附「请人工确认是否本文档自身」提示。报告中新增 `front_matter.source` / `front_matter.source_auto_filled`。
+- **table_cleaner：HTML 标签泄漏检测（T-24）**（developer-feedback §4.1）。在 `clean_tables` 末端扫描所有「未被 `<table>...</table>` 包裹」的孤立 `<tr>/<td>/</tr>/</td>/<tbody>` 等行，写入 `report.table_cleaner.tag_leaks` 数量与最多 5 个样本，并 `ctx.warn(...)` 让用户在转换报告中收到提醒。SOP 实测产生 18 处泄漏（与 feedback §4.1 描述一致），证明检测命中。
+
+### Verification
+
+- `python3 -m py_compile`：3 个修改的 Python 文件全部通过
+- `bash -n install.sh`：通过
+- `normalize_path_input` 单测：`"/Users/.../Mobile\ Documents/com\~apple\~CloudDocs"` → `"/Users/.../Mobile Documents/com~apple~CloudDocs"` ✓
+- 端到端：会员购 SOP docx 转换 → `source` 已自动填充、warnings 数组报告 18 处 tag_leak、front_matter 渲染正确
+
+---
+
+## [0.6.5] — 2026-04-25（HTML 表格紧凑行间距）
+
+### Changed
+
+- **T-23：HTML fallback 表格作用域内重写垂直留白策略**，目标是让单元格内嵌套列表的视觉密度接近 Obsidian 纯 markdown 列表。在 `_clean_html_table` 内按顺序新增 6 步：
+  1. `</p>\s*<p>` → `<br>` 保留段落视觉换行
+  2. 剥光剩余 `<p>/</p>` 标签（消除 1em 段落 margin）
+  3. `<ul>/<ol>` 注入 `style="margin:0.2em 0;padding-left:1.4em"`
+  4. `<li>` 注入 `style="margin:0;padding:0"`
+  5. `<blockquote>` 注入 `style="margin:0.2em 0;padding-left:0.8em;border-left:2px solid #ddd"`
+  6. `<td>/<th>` 现有 word-break style 追加 `padding:4px 8px;line-height:1.5;vertical-align:top`
+- 老规则 T-05/T-07/T-07b 因步骤 2 变为冗余但暂保留，待 v0.7.0 整理。
+- 步骤 3-5 用 `(?![^>]*style=)` negative lookahead 避免覆盖嵌套表内联样式。
+
+### Verification
+
+- 4 文档回归：列宽 `widths_from_docx` 数据完全稳定（带货佣金结算 9/9、PRD 2/3、会员购 1、小店 N/A），证明本轮改动正交于 T-22c。
+- PRD 那张 5-6 层嵌套 ul 表的渲染密度由「每 li 上下 ~16-32px gap」降到「~2-4px」。
+
+---
+
 ## [0.6.4] — 2026-04-24（HTML 表格列宽保留 docx 原始比例）
 
 ### Changed

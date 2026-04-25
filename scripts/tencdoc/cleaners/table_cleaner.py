@@ -588,9 +588,14 @@ def _clean_html_table(
                 r'\1\n' + colgroup,
                 s, count=1, flags=re.IGNORECASE,
             )
+    # T-23: Append padding/line-height/vertical-align to td/th so that:
+    #   - rows have consistent compact height
+    #   - narrow cells with little content don't float to vertical center
+    #     when neighboring wide cell wraps (vertical-align:top)
     s = re.sub(
         r'<(td|th)\b(?=[^>]*>)',
-        r'<\1 style="word-break:break-word;overflow-wrap:break-word"',
+        r'<\1 style="word-break:break-word;overflow-wrap:break-word;'
+        r'padding:4px 8px;line-height:1.5;vertical-align:top"',
         s, flags=re.IGNORECASE,
     )
 
@@ -731,14 +736,49 @@ def clean_tables(md: str, ctx: CleanerContext) -> str:
     # T-18: Remove phantom all-empty/all-dash pipe table blocks.
     md = _remove_phantom_pipe_tables(md)
 
-    ctx.set_report(
-        "table_cleaner",
-        {
-            "total_html_tables": total,
-            "degraded_to_pipe": to_pipe,
-            "kept_as_html": kept_html,
-            "widths_from_docx": widths_from_docx,
-            "widths_from_heuristic": widths_from_heuristic,
-        },
-    )
+    # T-24: 检测复杂嵌套表泄漏（developer-feedback §4.1）。
+    # 复杂表（含嵌套表 + 合并单元格）pandoc 输出时偶尔会在 GFM pipe 表后面留下
+    # 残余 `</td></tr><tr><td>...` 序列，混在正文里。这里只统计/告警，不强行
+    # 修复——后续若需修复，可对每个 leak 区段尝试 wrap 成 <table> 兜底。
+    leaks = _detect_table_tag_leaks(md)
+
+    table_report = {
+        "total_html_tables": total,
+        "degraded_to_pipe": to_pipe,
+        "kept_as_html": kept_html,
+        "widths_from_docx": widths_from_docx,
+        "widths_from_heuristic": widths_from_heuristic,
+        "tag_leaks": leaks["count"],
+    }
+    if leaks["count"]:
+        ctx.warn(
+            f"table_cleaner: 检测到 {leaks['count']} 处疑似泄漏 HTML 表格标签（"
+            f"{', '.join(leaks['samples'][:3])}）；建议人工核查复杂嵌套表区域。"
+        )
+        table_report["tag_leak_samples"] = leaks["samples"][:5]
+
+    ctx.set_report("table_cleaner", table_report)
     return md
+
+
+# 仅匹配「行首/独立成行」的孤立块级表格收尾标签 —— 这些是泄漏的强信号。
+# 行内出现的 `</td>`（例如已正确包裹在 <table> 内）会被下面的 _strip_tables
+# 一并移除后再扫描，避免误报。
+_ORPHAN_TAG_RE = re.compile(
+    r"^\s*(</?(?:tr|td|th|tbody|thead|tfoot)\b[^>]*>)\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+_FULL_TABLE_RE = re.compile(r"<table\b[^>]*>.*?</table>", re.DOTALL | re.IGNORECASE)
+
+
+def _detect_table_tag_leaks(md: str) -> dict:
+    """统计 markdown 中"游离在 <table> 之外"的表格标签数量与样本。"""
+    # 把所有完整的 <table>...</table> 抠掉，只看残余正文
+    residual = _FULL_TABLE_RE.sub("", md)
+    samples = []
+    count = 0
+    for m in _ORPHAN_TAG_RE.finditer(residual):
+        count += 1
+        if len(samples) < 5:
+            samples.append(m.group(1))
+    return {"count": count, "samples": samples}

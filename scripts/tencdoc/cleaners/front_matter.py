@@ -44,10 +44,12 @@ def inject_front_matter(md: str, ctx: CleanerContext) -> str:
     source_file = ctx.source_docx.name
 
     tenc_links = ctx.report.get("hyperlink_cleaner", {}).get("tencent_doc_links", [])
-    # We do NOT try to auto-guess the "source" URL yet — the first Tencent
-    # Doc link in the body is often an unrelated cross-reference. Leave
-    # empty for now; include the candidates as a YAML comment for the user.
-    source_value = ""
+    # 自动填充 source：取第一个候选链接（v0.6.6+）。
+    # 历史考量是「首个链接可能是交叉引用而非自身」，但实测中 (developer-feedback §4.3)
+    # 用户需要手动复制非常麻烦；改为「先填，再让用户在 review 时按需替换」更合算。
+    # 全部候选仍然以 YAML 注释形式保留，用户可一目了然地切换。
+    source_value = tenc_links[0] if tenc_links else ""
+    source_auto_filled = bool(source_value)
 
     lines = ["---"]
     lines.append(f"title: {_yaml_escape(title)}")
@@ -58,7 +60,12 @@ def inject_front_matter(md: str, ctx: CleanerContext) -> str:
     lines.append(f"author: {_yaml_escape(author)}")
     lines.append("aliases: []")
     if tenc_links:
-        lines.append("# tencent_doc_link_candidates (内部链接，供参考):")
+        if source_auto_filled and len(tenc_links) > 1:
+            lines.append("# source 已自动取首个候选；如非本文档自身请改成下列其一：")
+        elif source_auto_filled:
+            lines.append("# source 已自动取唯一候选；如非本文档自身请改为空。")
+        else:
+            lines.append("# tencent_doc_link_candidates (内部链接，供参考):")
         for url in tenc_links[:10]:
             lines.append(f"#   - {url}")
     lines.append("---")
@@ -71,6 +78,8 @@ def inject_front_matter(md: str, ctx: CleanerContext) -> str:
         {
             "title": title,
             "author": author,
+            "source": source_value,
+            "source_auto_filled": source_auto_filled,
             "tencent_doc_link_candidates": tenc_links[:10],
         },
     )

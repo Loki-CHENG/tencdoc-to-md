@@ -99,6 +99,21 @@ pandoc 展开 `colspan=N` header 时，生成 1 个填充格 + (N-1) 个空格�
 4. `<li>\s*<p>(...)` **非贪婪、不越过第一个 `</p>`**：去除 `<li><p>` 的段落包裹，消除 Obsidian 阅读视图的行间距问题
 5. `_WIKILINK_IMG_RE.sub(_wikilink_to_img)`：`![[path]]` → `<img src="path">`（Obsidian 不在 HTML block 中渲染 wiki-link）
 
+### 紧凑行间距（T-23）
+
+`_clean_html_table` 在剥 tbody/style 之后、注入 colgroup 之前对表格 HTML 块按以下顺序压缩垂直留白（作用域**仅限当前表格 HTML 字符串**，不污染其他正文）：
+
+| 步骤 | 处理 | 目的 |
+|---|---|---|
+| 1 | `</p>\s*<p>` → `<br>` | 段落分隔保留为视觉换行，避免 margin 叠加 |
+| 2 | 剥光 `<p>/</p>` | 消除 1em 上下 margin（`<p>` 的最大留白源） |
+| 3 | `<ul>/<ol>` 注入 `style="margin:0.2em 0;padding-left:1.4em"` | 覆盖 Obsidian 默认 1em margin |
+| 4 | `<li>` 注入 `style="margin:0;padding:0"` | 消除 list item 间垂直 gap |
+| 5 | `<blockquote>` 注入 `style="margin:0.2em 0;padding-left:0.8em;border-left:2px solid #ddd"` | 保留缩进语义但去 1em margin |
+| 6 | `<td>/<th>` style 链追加 `padding:4px 8px;line-height:1.5;vertical-align:top` | 行高一致、顶对齐（避免邻列换行时窄列文字"悬浮"中部） |
+
+步骤 3-5 用 `(?![^>]*style=)` negative lookahead 跳过已带内联样式的标签（保护嵌套表内容）。步骤 1+2 让旧规则 T-05/T-07/T-07b 成为冗余，但保留不删以备回滚。
+
 ### 列宽处理规范（T-22c：docx 原始比例优先）
 
 HTML fallback 表格注入 `<colgroup>` 时的优先级：
